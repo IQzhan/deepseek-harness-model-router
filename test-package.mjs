@@ -113,6 +113,39 @@ check('client section renders a render function', typeof pageRenderers[0]?.compo
 check('client inserts its stylesheet', styleTags.length, 1)
 check('stylesheet is scoped to this plugin', styleTags[0]?.textContent?.includes('.dsh-mr'), true)
 
+// ── the skill that ships with the plugin ────────────────────────────────────
+//
+// Two things must hold, and both are checkable rather than asserted in prose:
+// the skill must be INVOCABLE ONLY BY A HUMAN (`disable-model-invocation: true`
+// keeps it out of the model's catalog), and it must document every field the
+// configuration declares — a skill that misses a field teaches an agent to
+// configure the plugin wrongly.
+{
+  const { dirname, join } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const here = dirname(fileURLToPath(import.meta.url))
+  const skill = readFileSync(join(here, 'skills', 'model-routing', 'SKILL.md'), 'utf8')
+  check('the plugin ships a skill', skill.startsWith('---'), true)
+  check('the skill has a name', /^name: model-routing$/m.test(skill), true)
+  check('and a description for the composer', /^description: .+$/m.test(skill), true)
+  check('the skill is /-only: hidden from the model catalog',
+    /^disable-model-invocation: true$/m.test(skill), true)
+
+  const core = await import('./model-routing-config.js')
+  const fields = [
+    ...core.SCHEMA_FIELDS.root,
+    ...core.SCHEMA_FIELDS.classifier,
+    ...core.SCHEMA_FIELDS.task,
+    ...core.SCHEMA_FIELDS.pool,
+  ]
+  check('the skill documents every configured field',
+    fields.filter(field => !skill.includes(field)), [])
+  check('and names the configuration folder',
+    skill.includes('model-routing') && skill.includes('global.yml'), true)
+  check('and states that settings.yaml no longer holds it',
+    skill.includes('settings.yaml'), true)
+}
+
 const failed = results.filter(result => !result.ok)
 for (const result of results) {
   console.log(`${result.ok ? 'PASS' : 'FAIL'}  ${result.label}${result.ok ? '' : `\n      expected ${JSON.stringify(result.expected)}\n      actual   ${JSON.stringify(result.actual)}`}`)
