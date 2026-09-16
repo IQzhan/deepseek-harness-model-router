@@ -1723,6 +1723,7 @@ function mountRouter(ctx) {
         try {
           await fiber.dispose()
         } catch (error) {
+           diagnostics.fail('remove delegation tool', error)
           console.error(`${ROUTER_NAME}: could not remove the delegation tool`)
           console.error(error)
         }
@@ -1756,6 +1757,10 @@ function mountRouter(ctx) {
         const fiber = installDelegation(agent)
         if (fiber !== undefined) delegationFibers.set(agent, fiber)
       } catch (error) {
+        // Recorded, not only logged: installed: 0 beside granted: true is the
+        // symptom of a silent install failure, and the console it went to is not
+        // reachable from the settings page or from the health read.
+         diagnostics.fail('install delegation tool', error)
         console.error(`${ROUTER_NAME}: could not install the delegation tool`)
         console.error(error)
       }
@@ -1780,6 +1785,10 @@ function mountRouter(ctx) {
       const fiber = installDelegation(agent)
       if (fiber !== undefined) delegationFibers.set(agent, fiber)
     } catch (error) {
+      // Recorded, not only logged: installed: 0 beside granted: true is the
+      // symptom of a silent install failure, and the console it went to is not
+      // reachable from the settings page or from the health read.
+       diagnostics.fail('install delegation tool', error)
       console.error(`${ROUTER_NAME}: could not install the delegation tool`)
       console.error(error)
     }
