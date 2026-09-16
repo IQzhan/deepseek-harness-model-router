@@ -995,7 +995,7 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
 
   const fail = () => stubs.listeners.get('agent/request-error')(
     // Exactly the real shape: a provider, a failure, and NO model.
-    { agent, turn: 1, step: 0, provider: 'google', failure: { code: 'QUOTA', message: '429' } },
+    { agent, turn: 1, step: 0, provider: 'google', failure: { code: 'STREAM_ERROR', message: 'socket closed' } },
     async () => undefined,
   )
 
@@ -1012,6 +1012,65 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
     decisions.slice(0, 2).map(decision => decision?.kind), ['retry', 'retry'])
   check('and a budget is what stops it',
     stubs.logs.some(line => line.includes('spent its retry budget') || line.includes('exhausted')), true)
+}
+
+// 11e. A QUOTA/rate limit spends the whole PROVIDER for the turn, not one model.
+//
+// A 429 answers the same way for every other model of that provider, so walking
+// the rest of the pool one 429 at a time wastes real calls before the documented
+// fallback can happen. Measured live: a nine-model google pool, one 429 each.
+{
+  const stubs = await mount()
+  enable(stubs, {
+    defaultTaskId: 'general',
+    tasks: [
+      { id: 'modelling', name: '3D', description: '三维', enabled: true, keywords: ['建模'],
+        pool: [{ provider: 'google', model: 'gemini-3.7-flash', weight: 1 },
+          { provider: 'google', model: 'gemini-3.6-flash', weight: 1 },
+          { provider: 'google', model: 'gemini-3.5-flash', weight: 1 },
+          { provider: 'dashscope', model: 'qwen3.7-flash', weight: 1 }] },
+      { id: 'general', name: '通用', description: '日常', enabled: true,
+        pool: [{ provider: 'b-ai', model: 'qwen3.8-flash', weight: 1 }] },
+    ],
+  })
+  const agent = { session: session({ messages: [['user', '建模']] }) }
+  await request(stubs.listeners, agent, 1)
+  const decision = await stubs.listeners.get('agent/request-error')(
+    { agent, turn: 1, step: 0, provider: 'google', failure: { code: 'QUOTA', message: '429 quota exceeded' } },
+    async () => undefined,
+  )
+  check('a quota still asks for a retry', decision, { kind: 'retry' })
+  check('and says the provider is out of quota',
+    stubs.logs.some(line => line.includes('out of quota')), true)
+  // The retry must not walk the rest of google's models: a quota spends the whole
+  // TASK for this turn, so the documented cascade moves the turn to the default
+  // task. (Walking the pool one 429 at a time is what the live loop was doing.)
+  const retried = await request(stubs.listeners, agent, 1)
+  check('the retry leaves the quota-spent task instead of trying its next model',
+    retried.provider, 'b-ai')
+  check('and it never picked another google model',
+    stubs.logs.some(line => line.includes('rotating modelling')), false)
+
+  // A model-specific failure keeps the model-by-model rotation.
+  const other = await mount()
+  enable(other, {
+    defaultTaskId: 'general',
+    tasks: [
+      { id: 'modelling', name: '3D', description: '三维', enabled: true, keywords: ['建模'],
+        pool: [{ provider: 'google', model: 'gemini-3.7-flash', weight: 1 },
+          { provider: 'google', model: 'gemini-3.6-flash', weight: 1 }] },
+      { id: 'general', name: '通用', description: '日常', enabled: true,
+        pool: [{ provider: 'b-ai', model: 'qwen3.8-flash', weight: 1 }] },
+    ],
+  })
+  const agent2 = { session: session({ messages: [['user', '建模']] }) }
+  await request(other.listeners, agent2, 1)
+  await other.listeners.get('agent/request-error')(
+    { agent: agent2, turn: 1, step: 0, provider: 'google', failure: { code: 'STREAM_ERROR', message: 'socket closed' } },
+    async () => undefined,
+  )
+  check('a model-specific failure does not skip the provider',
+    (await request(other.listeners, agent2, 1)).provider, 'google')
 }
 
 // 12. A single-model pool does not rotate.

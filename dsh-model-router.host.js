@@ -1655,7 +1655,19 @@ function mountRouter(ctx) {
     const failedRoute = applied.get(key)
     diagnostics.providerFailed(payload.provider ?? failedRoute?.provider)
     const failed = exhausted.get(`${key}\u0000${taskId}`) ?? new Set()
-    failed.add(`${String(failedRoute?.provider ?? payload.provider)}\u0000${String(failedRoute?.model ?? '')}`)
+    const failedProvider = String(failedRoute?.provider ?? payload.provider)
+    failed.add(`${failedProvider}\u0000${String(failedRoute?.model ?? '')}`)
+    // A QUOTA belongs to the PROVIDER's plan, not to one model: the rest of that
+    // provider's candidates in this pool would answer exactly the same way.
+    // Measured live: a 429 quota walked a nine-model google pool one 429 at a
+    // time. A plain rate limit is NOT this case — per-model limits are real, and
+    // rotating to another model is exactly right for them.
+    const failure = payload.failure ?? {}
+    const quotaSpent = /QUOTA|quota|billing/iu
+      .test(`${String(failure.code ?? '')} ${String(failure.message ?? '')}`)
+    if (quotaSpent) {
+      console.log(`${ROUTER_NAME}: ${failedProvider} is out of quota; this task cannot serve the turn`)
+    }
     remember(exhausted, `${key}\u0000${taskId}`, failed)
     const untried = (task.pool ?? []).filter(entry => !failed.has(`${entry.provider}\u0000${entry.model}`))
 
@@ -1671,7 +1683,7 @@ function mountRouter(ctx) {
       return decision
     }
 
-    if (untried.length > 0 && task.pool.length > 1) {
+    if (!quotaSpent && untried.length > 0 && task.pool.length > 1) {
       // Advance the rotation AND pin what it advanced to: without the pin the
       // retry's own pick would consume the slot after it and land back on the
       // model that just failed.
