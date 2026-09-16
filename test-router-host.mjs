@@ -434,7 +434,12 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
   enable(stubs)
   const routed = await request(stubs.listeners, { session: session({ messages: [['user', '帮我建模一个齿轮']] }) }, 1)
   check('keyword turn routes into the task pool', routed.provider, 'google')
-  check('routed config preserves other fields', routed.reasoningEffort, 'max')
+  // A route CHANGE drops the inherited reasoning effort: keeping it asks the new
+  // model for a mode it may not have, which failed a live child outright
+  // (-ai/mimo-v2.5 does not support reasoning). Absent, the adapter uses the
+  // model's own default.
+  check('a routed turn drops the inherited reasoning effort', routed.reasoningEffort, undefined)
+  check('but keeps every other field', routed.maxTokens ?? 'untouched', 'untouched')
   check('mount logs that it is active', stubs.logs.some(line => line.includes('mounted')), true)
 }
 
@@ -514,6 +519,56 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
   check('a semantic answer routes to that task',
     [routed.provider, routed.model], ['google', 'gemini-3.7-flash'])
   MODELS.reply = 'none'
+}
+
+// 6b. A delegation delivers its prompt by SPLICING it into the child's inbox, and
+//     at the child's first request the derived message list does not yet contain
+//     it.
+//
+//     Measured live: three delegations in a row fell through to the classifier
+//     because `[task: …]` and every keyword were invisible in `deriveMessages()`.
+//     The recorded splice is the fallback that makes the first turn routable.
+{
+  const stubs = await mount()
+  enable(stubs, {
+    tasks: [
+      { id: 'modelling', name: '3D', description: '三维建模', enabled: true, keywords: ['建模'],
+        pool: [{ provider: 'google', model: 'gemini-3.7-flash', weight: 1 }] },
+      { id: 'general', name: '通用', description: '日常', enabled: true,
+        pool: [{ provider: 'b-ai', model: 'qwen3.8-flash', weight: 1 }] },
+    ],
+  })
+  /** A child whose opener exists ONLY as a recorded inbox splice. */
+  const spliced = session({ messages: [] })
+  spliced.deriveMessages = () => []
+  spliced.snapshotEvents = () => [{
+    type: 'agent/inbox/spliced',
+    data: { target: 'next-turn', start: 0, inserted: [{ content: [{ type: 'text', text: '建模这块交给你' }] }] },
+  }]
+  const byKeyword = await request(stubs.listeners, { session: spliced }, 1)
+  check('a keyword in a spliced opener still routes', byKeyword.provider, 'google')
+  check('and the classifier was not needed', stubs.llm.requests.length, 0)
+
+  const directed = session({ messages: [] })
+  directed.deriveMessages = () => []
+  directed.snapshotEvents = () => [{
+    type: 'agent/inbox/spliced',
+    data: { inserted: [{ content: [{ type: 'text', text: '做点什么 [task: general]' }] }] },
+  }]
+  check('an explicit directive in a spliced opener still routes',
+    (await request(stubs.listeners, { session: directed }, 1)).provider, 'b-ai')
+
+  // A shape change must degrade to "no text", never throw on the request path.
+  const odd = session({ messages: [] })
+  odd.deriveMessages = () => []
+  odd.snapshotEvents = () => [{ type: 'agent/inbox/spliced', data: { inserted: 'nonsense' } }]
+  check('a malformed splice does not break the turn',
+    (await request(stubs.listeners, { session: odd }, 1)).provider, 'b-ai')
+
+  const noReader = session({ messages: [] })
+  noReader.deriveMessages = () => []
+  check('a session without an event reader still routes',
+    (await request(stubs.listeners, { session: noReader }, 1)).provider, 'b-ai')
 }
 
 // 7. The classifier runs once per turn, not once per step.
@@ -897,7 +952,8 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
       pool: [{ provider: 'google', model: 'gemini-3.7-flash', weight: 1 }] }],
   })
   const inherited = await request(plain.listeners, { session: session({ messages: [['user', '建模']] }) }, 1)
-  check('without one, the inherited effort stands', inherited.reasoningEffort, 'max')
+  check('without one, a route change drops the inherited effort too',
+    inherited.reasoningEffort, undefined)
 }
 // 15. Settings changes invalidate cached decisions.
 {
@@ -1152,7 +1208,7 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
     [child.sections[0].text, child.sections[0].complete],
     ['You are a CAD executor. Do only the part you were given.', true])
   check('the task tool filter rides the start request',
-    sent.request.toolFilter.deny.sort(), ['subagent', 'subagent_message', 'web_fetch'])
+    sent.request.toolFilter.deny, ['web_fetch'])
   check('a child never receives the delegation tools themselves',
     child.owns.size, 0)
   check('and its own delegation names are masked',
@@ -1172,8 +1228,13 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
   const plainChild = children[1]
   check('a task without a persona inherits the parent composition',
     plainChild.sections, [])
-  check('and without childTools the filter only blocks recursion',
-    subagents.starts[1].request.toolFilter.deny.sort(), ['subagent', 'subagent_message'])
+  // No childTools means NO filter at all. An earlier version added this
+  // plugin's own tool names to every child's deny list; the provider validates
+  // those names against the CHILD's registry, where they do not exist, so it
+  // refused the filter and the retry dropped it — noise on every delegation and
+  // no protection whatever. Recursion is enforced elsewhere (see the case below).
+  check('a task without childTools sends no filter',
+    subagents.starts[1].request.toolFilter, undefined)
 
   // The switch, not the preset, decides recursion: enabled means no mask.
   stubs.settings.value().childDelegation = true

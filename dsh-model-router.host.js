@@ -362,11 +362,25 @@ function messageText(message) {
  * tool result. This walks forward to the first non-empty user-side message,
  * which is the task the subagent was spawned with.
  *
+ * The fallback is not a nicety, it is the difference between routing and not
+ * routing. A delegation delivers its prompt by SPLICING it into the child's
+ * inbox (`agent/inbox/spliced`, targeting the next turn), and at the moment the
+ * child's first request is assembled the derived message list does not yet
+ * contain it — measured live: three delegations in a row fell through to the
+ * classifier because `[task: …]` and every keyword were invisible. Reading the
+ * recorded splice is what makes the first turn routable.
+ *
  * @param session - the delegated session.
  * @returns the opener's text, or an empty string when there is none.
  */
 function rootTaskText(session) {
-  const messages = session.deriveMessages()
+  const derived = openerFromMessages(session)
+  return derived.length > 0 ? derived : openerFromSplices(session)
+}
+
+/** The opener as the session's derived message list reports it. */
+function openerFromMessages(session) {
+  const messages = typeof session.deriveMessages === 'function' ? session.deriveMessages() : []
   for (const message of messages) {
     if (message.role !== 'user') continue
     const text = messageText(message).trim()
@@ -375,9 +389,36 @@ function rootTaskText(session) {
   return ''
 }
 
+/**
+ * The opener as the session's recorded inbox splice reports it.
+ *
+ * Shape comes from the log itself: `inserted: [{ content: [{ type: 'text',
+ * text }] }]`. Every read is guarded — this reaches into recorded events, so a
+ * shape change must degrade to "no text", never to a throw on the request path.
+ *
+ * @param session - the delegated session.
+ * @returns the first spliced user text, or an empty string.
+ */
+function openerFromSplices(session) {
+  const events = typeof session.snapshotEvents === 'function'
+    ? session.snapshotEvents()
+    : typeof session.events === 'function' ? session.events() : []
+  if (!Array.isArray(events)) return ''
+  for (const event of events) {
+    if (event?.type !== 'agent/inbox/spliced') continue
+    const inserted = event.data?.inserted
+    if (!Array.isArray(inserted)) continue
+    for (const message of inserted) {
+      const text = messageText({ content: Array.isArray(message?.content) ? message.content : [] }).trim()
+      if (text.length > 0) return text
+    }
+  }
+  return ''
+}
+
 /** Recent conversation text, newest-first, bounded by message count. */
 function recentText(session, messageLimit) {
-  const messages = session.deriveMessages()
+  const messages = typeof session.deriveMessages === 'function' ? session.deriveMessages() : []
   const parts = []
   for (let index = messages.length - 1; index >= 0 && parts.length < messageLimit; index -= 1) {
     const message = messages[index]
@@ -795,7 +836,7 @@ function buildDelegationTool(options) {
       // validates and applies it at creation, before any child exists), and the
       // persona is announced so the child's own scope installs it. See
       // `childProfileOf` for why the persona cannot ride the request too.
-      const filter = childToolFilter(declared, childDelegation)
+      const filter = childToolFilter(declared)
       /** The start request, with or without the task's tool filter. */
       const requestWith = (useFilter) => ({
         label: args.description,
@@ -958,15 +999,21 @@ function isFilterRefusal(error) {
  * @param childDelegation - the operator's switch; true allows one level more.
  * @returns a `ToolRestriction`, or undefined when nothing needs restricting.
  */
-function childToolFilter(task, childDelegation) {
+function childToolFilter(task) {
   const declared = task?.childTools !== null && typeof task?.childTools === 'object' ? task.childTools : {}
   const allow = Array.isArray(declared.allow) ? [...declared.allow] : undefined
   const deny = Array.isArray(declared.deny) ? [...declared.deny] : []
-  // Only a `deny` needs augmenting: an `allow` list already excludes everything
-  // it does not name.
-  if (childDelegation !== true && allow === undefined) {
-    for (const name of [DELEGATION_TOOL, MESSAGE_TOOL]) if (!deny.includes(name)) deny.push(name)
-  }
+  // Recursion is NOT enforced here, deliberately.
+  //
+  // This filter is validated by the subagent provider against the CHILD's tool
+  // registry, and this plugin's own tool names live in the PARENT's scope: naming
+  // them is refused outright ("unknown global tool"), which drops the ENTIRE
+  // filter — the opposite of protecting anything. Measured live, on every
+  // delegation, which is how it was found.
+  //
+  // What actually keeps a child from delegating, in order: the child never gets
+  // this plugin's tools installed, `maxDepth` refuses a grandchild at the
+  // provider, and both tools refuse a subagent caller at execution.
   if (allow === undefined && deny.length === 0) return undefined
   return {
     ...allow === undefined ? {} : { allow },
@@ -1313,11 +1360,21 @@ function mountRouter(ctx) {
     const same = target.provider === base.provider && target.model === base.model
     const effort = target.reasoningEffort
     if (same && (effort === undefined || effort === base.reasoningEffort)) return base
-    return {
+    const routed = {
       ...base,
       ...same ? {} : { provider: target.provider, model: target.model },
-      ...effort === undefined ? {} : { reasoningEffort: effort },
     }
+    if (effort === undefined) {
+      // A route CHANGE must drop the inherited effort. Keeping it means asking
+      // the new model for a reasoning mode it may not have — measured live: a
+      // child died with `provider "b-ai" model "mimo-v2.5" does not support
+      // reasoning` before producing a single token. Without the key the adapter
+      // applies the model's own default, the only value that can be right.
+      if (!same) delete routed.reasoningEffort
+    } else {
+      routed.reasoningEffort = effort
+    }
+    return routed
   })
 
   // A failed request advances the rotation so the retry lands on a different
