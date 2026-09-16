@@ -396,11 +396,18 @@ Typert Remote 面（`remote.session.modelCatalog`、`remote.agentPresets`），�
                                  "applied": true, "error": null } ] },
   "capabilities":{ "settings": true, "llm": true, "timer": true, "agents": true,
                    "subagents": true, "agentPresets": true, "webServer": true },
-  "errors":      [ { "at": 1789…, "where": "agent/request", "message": "…" } ],   // 最近 12 条
+  "errors":      [ { "at": 1789…, "where": "agent/request", "message": "…",
+                     "counted": true } ],                                        // 最近 12 条
   "breaker":     { "tripped": false, "reason": "", "consecutive": 0, "threshold": 5 },
   "providers":   { "b-ai": { "failures": 4, "lastAt": 1789… } }
 }
 ```
+
+**`errors[]` 里两种条目：计数与不计数（`counted`）。** 熔断的语义是"插件坏到不能待在请求路径里"，
+所以它只数**请求路径**上的失败（`agent/request`）。安装失败、`resolveModelInfo` 查询失败、子过滤器被
+拒、屏蔽被拒、配置解析问题，都是**降级**：页面照样显示（`counted: false`），但不会把路由摘出去。
+这条区分是实测逼出来的——守卫装不上时每次保存设置会写 2 条，**3 次保存就凑满阈值 5**，把路由整整
+停 60 秒；一个配置问题不该造成停摆。
 
 **`delegation` 为什么是三个数而不是一个"装了几个"**（这是被真实故障逼出来的）：
 

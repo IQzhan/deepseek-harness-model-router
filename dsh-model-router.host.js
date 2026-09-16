@@ -629,6 +629,25 @@ function createDiagnostics() {
   let consecutive = 0
   const capabilities = {}
 
+  /**
+   * Append one entry to the ring, and count it toward the breaker only when it is
+   * a failure of the REQUEST PATH — see `note` for why the distinction exists.
+   */
+  function record(where, error, counted) {
+    const message = error instanceof Error ? error.message : String(error)
+    errors.push({ at: Date.now(), where, message, counted })
+    if (errors.length > ERROR_RING) errors.shift()
+    console.error(`${ROUTER_NAME}: ${where} ${counted ? 'failed' : 'degraded'}`)
+    console.error(error)
+    if (!counted) return
+    consecutive += 1
+    if (consecutive >= BREAKER_THRESHOLD && trippedAt === 0) {
+      trippedAt = Date.now()
+      tripReason = `${consecutive} consecutive failures, last in ${where}: ${message}`
+      console.error(`${ROUTER_NAME}: disabled itself after ${consecutive} failures — ${message}`)
+    }
+  }
+
   return {
     /** Record which optional dependency was present at mount. */
     probe(capabilities_) {
@@ -636,17 +655,20 @@ function createDiagnostics() {
     },
     /** Remember one unexpected failure, and trip the breaker when they pile up. */
     fail(where, error) {
-      const message = error instanceof Error ? error.message : String(error)
-      errors.push({ at: Date.now(), where, message })
-      if (errors.length > ERROR_RING) errors.shift()
-      consecutive += 1
-      if (consecutive >= BREAKER_THRESHOLD && trippedAt === 0) {
-        trippedAt = Date.now()
-        tripReason = `${consecutive} consecutive failures, last in ${where}: ${message}`
-        console.error(`${ROUTER_NAME}: disabled itself after ${consecutive} failures — ${message}`)
-      }
-      console.error(`${ROUTER_NAME}: ${where} failed`)
-      console.error(error)
+      record(where, error, true)
+    },
+    /**
+     * Record a DEGRADATION: visible in the page, but NOT a routing failure.
+     *
+     * The breaker exists to take a broken plugin out of the request path, and it
+     * counts consecutive failures of that path. A capability that could not be
+     * installed, a lookup that failed, a mask that was refused — those degrade one
+     * feature while routing still works, and counting them would let a few
+     * settings saves disable routing entirely: measured live, two such entries
+     * were written per save, so THREE saves reached the threshold of five.
+     */
+    note(where, error) {
+      record(where, error, false)
     },
     /** One success clears the streak; the breaker itself needs a real reset. */
     ok() { consecutive = 0 },
@@ -1195,7 +1217,7 @@ function mountRouter(ctx) {
       for (const problem of next.problems) {
         console.error(`${ROUTER_NAME}: ${problem.file}: ${problem.message}`)
       }
-      diagnostics.fail('configuration file', new Error(next.problems.map(p => `${p.file}: ${p.message}`).join('; ')))
+      diagnostics.note('configuration file', new Error(next.problems.map(p => `${p.file}: ${p.message}`).join('; ')))
     }
     return changed
   }
@@ -1281,7 +1303,7 @@ function mountRouter(ctx) {
         try {
           if (reload()) onConfigChange()
         } catch (error) {
-          diagnostics.fail('configuration reload', error)
+          diagnostics.note('configuration reload', error)
         }
         timer.timeout(tick, CONFIG_POLL_MS)
       }
@@ -1486,7 +1508,7 @@ function mountRouter(ctx) {
     } catch (error) {
       // An aborted lookup says nothing about the model, so it is not cached.
       if (signal?.aborted === true) return undefined
-      diagnostics.fail('reasoning effort lookup', error)
+      diagnostics.note('reasoning effort lookup', error)
       console.error(`${ROUTER_NAME}: could not resolve the reasoning levels of ${key}`)
       support = undefined
     }
@@ -1798,7 +1820,7 @@ function mountRouter(ctx) {
             childDelegation: live.childDelegation === true,
             announce,
             reportFilterFailure: (error) => {
-              diagnostics.fail('child tool filter', error)
+              diagnostics.note('child tool filter', error)
               console.error(`${ROUTER_NAME}: the task's child tool filter was refused; retrying the delegation without it`)
             },
           })))
@@ -1829,7 +1851,7 @@ function mountRouter(ctx) {
           // `ctx.plugin()` has already returned, so the caller's `try` cannot see
           // this throw — a deferred failure would otherwise reach a console that
           // neither the settings page nor the health read can read.
-           diagnostics.fail('delegation startup', error)
+           diagnostics.note('delegation startup', error)
           throw error
         }
         return teardown
@@ -1925,7 +1947,7 @@ function mountRouter(ctx) {
           state.error = error instanceof Error ? error.message : String(error)
           // Recorded HERE for the same reason as the delegation install: startup
           // is deferred, so the caller cannot catch this.
-           diagnostics.fail('child rules startup', error)
+           diagnostics.note('child rules startup', error)
           throw error
         }
         return teardown
@@ -1957,7 +1979,7 @@ function mountRouter(ctx) {
         try {
           await fiber.dispose()
         } catch (error) {
-           diagnostics.fail('remove delegation tool', error)
+           diagnostics.note('remove delegation tool', error)
           console.error(`${ROUTER_NAME}: could not remove the delegation tool`)
           console.error(error)
         }
@@ -1994,7 +2016,7 @@ function mountRouter(ctx) {
         // Recorded, not only logged: installed: 0 beside granted: true is the
         // symptom of a silent install failure, and the console it went to is not
         // reachable from the settings page or from the health read.
-         diagnostics.fail('install delegation tool', error)
+         diagnostics.note('install delegation tool', error)
         console.error(`${ROUTER_NAME}: could not install the delegation tool`)
         console.error(error)
       }
@@ -2022,7 +2044,7 @@ function mountRouter(ctx) {
       // Recorded, not only logged: installed: 0 beside granted: true is the
       // symptom of a silent install failure, and the console it went to is not
       // reachable from the settings page or from the health read.
-       diagnostics.fail('install delegation tool', error)
+       diagnostics.note('install delegation tool', error)
       console.error(`${ROUTER_NAME}: could not install the delegation tool`)
       console.error(error)
     }
@@ -2099,7 +2121,7 @@ function mountRouter(ctx) {
       if (!patched) {
         // Reported, never assumed: the depth policy is then simply NOT in force,
         // and a guard rail that is silently absent is worse than none.
-        diagnostics.fail('delegation depth guard', new Error(`${method} is not writable on the service or its prototype`))
+        diagnostics.note('delegation depth guard', new Error(`${method} is not writable on the service or its prototype`))
         console.error(`${ROUTER_NAME}: could not guard ${method} against deep delegation`)
       }
     }
@@ -2164,7 +2186,7 @@ function mountRouter(ctx) {
           for (const name of headerToolList(agent.session)) names.add(name)
         }
       } catch (error) {
-        diagnostics.fail('agent tool enumeration', error)
+        diagnostics.note('agent tool enumeration', error)
       }
       // This plugin's own tools are never given to a child, so offering them as
       // child tools would be a choice that silently does nothing.
@@ -2233,7 +2255,7 @@ function mountRouter(ctx) {
             }
           })
         } catch (error) {
-          diagnostics.fail('agent enumeration', error)
+          diagnostics.note('agent enumeration', error)
           return []
         }
       })(),

@@ -1038,8 +1038,34 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
     (await odd.handlers.get('health')()).errors, [])
 }
 
-// 13b. The breaker takes the plugin out of the request path after repeated
-//      failures, and a settings change puts it back.
+// 13c. A DEGRADATION is visible without being able to disable routing.
+//
+// The breaker exists to take a broken plugin out of the request path, so it counts
+// failures OF that path. A capability that could not be installed, a lookup that
+// failed, a mask that was refused: those degrade one feature while routing still
+// works — and counting them let a few settings saves reach the threshold.
+// Measured live: two entries were written per save, so THREE saves could have
+// disabled routing for a minute.
+{
+  const main = fakeAgent({ preset: 'diy-smart', id: 'main-note' })
+  const subagents = makeSubagents()
+  Object.freeze(subagents) // every config change then records the guard failure
+  const stubs = await mount(undefined, undefined, { agents: [main], subagents })
+  enable(stubs, { preset: 'diy-smart' })
+  for (let save = 0; save < 6; save += 1) {
+    stubs.settings.value().enabled = save % 2 === 0
+    await mountSync(stubs)
+  }
+  const health = await stubs.handlers.get('health')()
+  check('degradations are recorded for the page',
+    health.errors.filter(entry => entry.where === 'delegation depth guard').length >= 2, true)
+  check('and are marked as not counted', health.errors[0]?.counted, false)
+  check('but they never trip the breaker', health.breaker.tripped, false)
+  check('and the streak stays at zero', health.breaker.consecutive, 0)
+  check('while the guard still reports itself as absent', health.delegation.depthGuard, false)
+}
+
+
 {
   const stubs = await mount()
   enable(stubs)
