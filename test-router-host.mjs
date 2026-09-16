@@ -1914,13 +1914,57 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
   check('so deep delegation is possible again', await startFrom(grandchild), 'started')
 }
 
-// 18-6. A guard that cannot be installed is REPORTED, not assumed.
+// 18-6. A FROZEN instance is still guarded through its prototype.
+//
+// The real deployment freezes the service instance: the plugin's own diagnostic
+// caught it live ("start is not writable"), which is exactly why health reports
+// whether the guard is in force instead of the plugin assuming it is.
 {
   const main = fakeAgent({ preset: 'diy-smart', id: 'main-2' })
+  const child = fakeAgent({ preset: 'diy-smart', origin: 'subagent', id: 'child-2', depth: 1, parent: 'main-2' })
+  // A class instance whose own properties are frozen but whose prototype is not —
+  // the deployment's shape. The counter lives OUTSIDE the instance, because a
+  // frozen instance cannot be mutated by its own method.
+  const calls = []
+  class Service {
+    constructor() { Object.freeze(this) }
+    async start(provider, request) { calls.push(request?.parent?.session?.id); return { id: 'run' } }
+    async startContinuable(spec) { calls.push(spec?.request?.parent?.session?.id); return { childId: 'c' } }
+  }
+  const frozen = new Service()
+  const stubs = await mount(undefined, undefined, { agents: [main, child], subagents: frozen })
+  enable(stubs, { preset: 'diy-smart' })
+  await mountSync(stubs)
+  const health = await stubs.handlers.get('health')()
+  check('a frozen instance is guarded through its prototype', health.delegation.depthGuard, true)
+  check('with no failure recorded for it',
+    health.errors.some(entry => entry.where === 'delegation depth guard'), false)
+  check('and the guard still refuses a child', await (async () => {
+    try {
+      await frozen.start('spawn', { prompt: 'x', parent: child })
+      return 'started'
+    } catch (error) {
+      return error.message.startsWith('this subagent is an executor')
+    }
+  })(), true)
+  check('while a main agent passes', await (async () => {
+    try {
+      await frozen.start('spawn', { prompt: 'x', parent: main })
+      return 'started'
+    } catch {
+      return 'refused'
+    }
+  })(), 'started')
+  check('and the original method really ran for it', calls, ['main-2'])
+}
+
+// 18-7. When NEITHER the instance nor its prototype can be patched, health must
+//       not claim the policy is in force.
+{
+  const main = fakeAgent({ preset: 'diy-smart', id: 'main-3' })
   const subagents = makeSubagents()
-  // A frozen service is what another plugin could leave behind; the assignment
-  // then does nothing, and a silent no-op is exactly the state that let a
-  // grandchild exist.
+  // A fully frozen service (and a plain object, so its prototype is
+  // `Object.prototype` — which the guard must never patch).
   Object.freeze(subagents)
   const stubs = await mount(undefined, undefined, { agents: [main], subagents })
   enable(stubs, { preset: 'diy-smart' })
@@ -1929,6 +1973,8 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
   check('a guard that could not be installed is recorded',
     health.errors.some(entry => entry.where === 'delegation depth guard'), true)
   check('and health does not claim it is in force', health.delegation.depthGuard, false)
+  check('and Object.prototype was left alone',
+    Object.prototype.start, undefined)
 }
 
 

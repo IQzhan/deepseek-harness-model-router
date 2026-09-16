@@ -2074,14 +2074,32 @@ function mountRouter(ctx) {
         if ((typeof depth === 'number' ? depth : 0) >= limitOf()) error()
         return original.apply(this, args)
       }
-      try {
-        subagents[method] = guarded
-        if (subagents[method] !== guarded) throw new Error(`${method} is not writable`)
-        restore.push(() => { subagents[method] = original })
-      } catch (failure) {
-        // Reported, never assumed: another plugin may have frozen the service,
-        // and then the depth policy is simply not in force.
-        diagnostics.fail('delegation depth guard', failure)
+      // Instances are FROZEN in the real deployment — the plugin's own diagnostic
+      // caught it ("start is not writable") — so the instance is tried first and
+      // the PROTOTYPE second: that is where a class method actually lives, and it
+      // is the target that works. A prototype is only touched when it OWNS the
+      // method and is not one of the shared roots; patching `Object.prototype` to
+      // police one service would be a bug of a different order.
+      const proto = Object.getPrototypeOf(subagents)
+      const targets = [subagents]
+      if (proto !== null && proto !== Object.prototype && proto !== Function.prototype
+        && Object.hasOwn(proto, method) && typeof proto[method] === 'function') {
+        targets.push(proto)
+      }
+      let patched = false
+      for (const target of targets) {
+        try {
+          target[method] = guarded
+          if (target[method] !== guarded) continue
+          restore.push(() => { target[method] = original })
+          patched = true
+          break
+        } catch { /* try the next target */ }
+      }
+      if (!patched) {
+        // Reported, never assumed: the depth policy is then simply NOT in force,
+        // and a guard rail that is silently absent is worse than none.
+        diagnostics.fail('delegation depth guard', new Error(`${method} is not writable on the service or its prototype`))
         console.error(`${ROUTER_NAME}: could not guard ${method} against deep delegation`)
       }
     }
