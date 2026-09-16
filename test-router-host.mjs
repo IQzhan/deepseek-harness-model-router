@@ -1319,6 +1319,60 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
   check('and reaches the caller unchanged', propagated, '429 rate limited')
 }
 
+// 18i. A child's tool list is built as an ALLOW list, so delegation tools cannot
+//      appear in it without needing to be named.
+//
+// The child composes its own preset, which here carries delegation rows; a DENY
+// list naming them is refused wholesale at creation, so nothing was filtered at
+// all. Naming what the child KEEPS is the mechanism that actually removes them.
+{
+  const parent = fakeAgent({ preset: 'diy-smart', id: 'allow-1' })
+  // A realistic caller: an assembled header carrying this deployment's tools,
+  // including the delegation tools that must not reach a child.
+  parent.session.requestHeader = () => ({
+    config: {},
+    tools: [
+      { name: 'read' }, { name: 'pwsh' }, { name: 'web_fetch' },
+      { name: 'subagent' }, { name: 'subagent_message' },
+      { name: 'subagent_fork' }, { name: 'list_subagent_models' },
+    ].map(entry => ({ ...entry, description: '', parameters: {} })),
+  })
+  const subagents = makeSubagents()
+  const stubs = await mount(undefined, undefined, { agents: [parent], subagents })
+  enable(stubs, {
+    preset: 'diy-smart',
+    tasks: [{ id: 'modelling', name: '3D', description: '三维', enabled: true,
+      pool: [{ provider: 'google', model: 'gemini-3.7-flash', weight: 1 }] }],
+  })
+  await mountSync(stubs)
+  await parent.registered.get('subagent').execute(
+    { description: 'part', prompt: 'Build part A.', task: 'modelling' },
+    { agent: parent, signal: new AbortController().signal },
+  )
+  const allow = subagents.starts[0].request.toolFilter?.allow ?? []
+  check('the child keeps the ordinary tools', allow.includes('read') && allow.includes('pwsh'), true)
+  check('and none of the delegation tools', allow.filter(name => /subagent|delegate/.test(name)), [])
+  check('the list is not empty (that would deny everything)', allow.length > 0, true)
+  check('and it carries no duplicates', allow.length, new Set(allow).size)
+
+  // A caller with no tool header must produce NO filter, never an empty allow.
+  const blind = fakeAgent({ preset: 'diy-smart', id: 'allow-2' })
+  const second = makeSubagents()
+  const stubs2 = await mount(undefined, undefined, { agents: [blind], subagents: second })
+  enable(stubs2, {
+    preset: 'diy-smart',
+    tasks: [{ id: 'modelling', name: '3D', description: '三维', enabled: true,
+      pool: [{ provider: 'google', model: 'gemini-3.7-flash', weight: 1 }] }],
+  })
+  await mountSync(stubs2)
+  await blind.registered.get('subagent').execute(
+    { description: 'part', prompt: 'Build part A.', task: 'modelling' },
+    { agent: blind, signal: new AbortController().signal },
+  )
+  check('no readable tool header means no filter at all',
+    second.starts[0].request.toolFilter, undefined)
+}
+
 // 19. A task whose whole pool failed hands the turn to the default task; when
 //     that is spent too, the caller keeps the inherited route and works itself.
 {

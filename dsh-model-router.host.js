@@ -836,7 +836,12 @@ function buildDelegationTool(options) {
       // validates and applies it at creation, before any child exists), and the
       // persona is announced so the child's own scope installs it. See
       // `childProfileOf` for why the persona cannot ride the request too.
-      const filter = childToolFilter(declared)
+      // An allow list by default; the task's own declaration wins when it has
+      // one, and childDelegation: true asks for children that CAN delegate, so
+      // nothing is filtered away from them.
+      const filter = declared?.childTools != null
+        ? childToolFilter(declared)
+        : childDelegation === true ? undefined : childAllowList(parent)
       /** The start request, with or without the task's tool filter. */
       const requestWith = (useFilter) => ({
         label: args.description,
@@ -985,6 +990,48 @@ function buildMessageTool(options) {
 function isFilterRefusal(error) {
   const message = error instanceof Error ? error.message : String(error)
   return /tools\.restrict|unknown global tool/iu.test(message)
+}
+
+/**
+ * The tool list a child should get, built as an ALLOW list.
+ *
+ * An allow list is the only mechanism that can remove a tool it cannot name. A
+ * child composes its parent's preset, and that preset may carry delegation rows
+ * (this deployment's `cordis` preset has several). A DENY list naming them is
+ * validated against the child's registry at creation — before that composition is
+ * in place — so it was refused wholesale and nothing was filtered at all;
+ * measured live, on every delegation. Naming what the child KEEPS sidesteps the
+ * question: whatever is not on the list is simply absent.
+ *
+ * The list comes from the caller's own assembled header, so it is whatever this
+ * deployment actually has rather than a hard-coded guess.
+ *
+ * @param parent - the delegating agent.
+ * @returns `{ allow }`, or undefined when there is nothing to build from (an
+ *   empty allow list would deny every tool, which is never the intent).
+ */
+function childAllowList(parent) {
+  const names = headerToolList(parent?.session)
+    .filter(name => !isDelegationTool(name))
+  return names.length > 0 ? { allow: [...new Set(names)] } : undefined
+}
+
+/**
+ * Whether a tool name belongs to the delegation machinery.
+ *
+ * Matched by SHAPE, not by an enumerated list: this plugin's two tools, the
+ * built-ins a preset may carry (`subagent_fork`, `subagent_codex`, …), the
+ * model-selection helper (`list_subagent_models`) and the controller tools
+ * (`send_message`, `list_agents`) are all delegation by construction, and a new
+ * one added by a future DSH release still matches the pattern. A tool a child
+ * needs is never named this way.
+ *
+ * @param name - a tool name from an assembled header.
+ * @returns true when a child must not have it.
+ */
+function isDelegationTool(name) {
+  return /^subagent/iu.test(name) || name === 'list_subagent_models'
+    || name === 'send_message' || name === 'list_agents'
 }
 
 /**
