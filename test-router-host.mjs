@@ -967,6 +967,53 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
     stubs.logs.some(line => line.includes('rotating')), false)
 }
 
+// 11d. A failure the event cannot attribute must still DRAIN the pool, and the
+//      retry budget must terminate whatever else goes wrong.
+//
+// The real event carries `{ turn, step, provider, failure, retryPolicy, signal }`
+// — no model (`agent-loop/src/agent.ts:448-457`). A handler that reads the model
+// off the event writes `provider\0undefined` into its exhausted set, which no pool
+// entry can match: every candidate keeps looking untried and the retry never
+// stops. Measured live: 164 attempts, all 429s from one quota, the models
+// alternating as each retry rotated the pool.
+{
+  const stubs = await mount()
+  enable(stubs, {
+    defaultTaskId: 'general',
+    tasks: [
+      { id: 'modelling', name: '3D', description: '三维', enabled: true, keywords: ['建模'],
+        pool: [{ provider: 'google', model: 'gemini-3.7-flash', weight: 1 },
+          { provider: 'google', model: 'gemini-3.6-flash', weight: 1 }] },
+      { id: 'general', name: '通用', description: '日常', enabled: true,
+        pool: [{ provider: 'b-ai', model: 'qwen3.8-flash', weight: 1 },
+          { provider: 'b-ai', model: 'mimo-v2.5', weight: 1 }] },
+    ],
+  })
+  const agent = { session: session({ messages: [['user', '建模']] }) }
+  const first = await request(stubs.listeners, agent, 1)
+  check('the turn starts on a pool candidate', first.provider, 'google')
+
+  const fail = () => stubs.listeners.get('agent/request-error')(
+    // Exactly the real shape: a provider, a failure, and NO model.
+    { agent, turn: 1, step: 0, provider: 'google', failure: { code: 'QUOTA', message: '429' } },
+    async () => undefined,
+  )
+
+  const decisions = []
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    decisions.push(await fail())
+    // Each retry re-dispatches, exactly as the runtime does.
+    await request(stubs.listeners, agent, 1)
+  }
+  const granted = decisions.filter(decision => decision?.kind === 'retry').length
+  check('an unattributable failure does not retry forever', granted <= 6, true)
+  check('and the loop really ends', decisions[decisions.length - 1], undefined)
+  check('the pool rotates before anything is banned',
+    decisions.slice(0, 2).map(decision => decision?.kind), ['retry', 'retry'])
+  check('and a budget is what stops it',
+    stubs.logs.some(line => line.includes('spent its retry budget') || line.includes('exhausted')), true)
+}
+
 // 12. A single-model pool does not rotate.
 {
   const stubs = await mount()

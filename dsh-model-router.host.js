@@ -1155,6 +1155,19 @@ function mountRouter(ctx) {
   const decisions = new Map()
   /** `${sessionId}\0${turn}` -> taskId, so a retry rotates the pool that failed. */
   const routed = new Map()
+  /**
+   * `${sessionId}\0${turn}` -> the route this plugin actually applied.
+   *
+   * `agent/request-error` carries the failing PROVIDER but no model
+   * (`agent-loop/src/agent.ts:448-457`), so a handler that reads a model off the
+   * event writes `provider\0undefined` into its exhausted set — which matches no
+   * pool entry, so the pool never drains and the retry never stops. Measured
+   * live: 164 attempts, every one a 429 from the same quota, models alternating
+   * as each retry rotated. The route is therefore read from what was APPLIED.
+   */
+  const applied = new Map()
+  /** `${sessionId}\0${turn}` -> how many retries this turn has already spent. */
+  const retries = new Map()
   /** `${sessionId}\0${turn}\0${taskId}` -> routes already known to fail this turn. */
   const exhausted = new Map()
   /** `${sessionId}\0${turn}` -> task ids this turn must not route to again. */
@@ -1285,6 +1298,8 @@ function mountRouter(ctx) {
     routed.clear()
     exhausted.clear()
     banned.clear()
+    applied.clear()
+    retries.clear()
     diagnostics.reset()
     void syncDelegation(true)
     // The depth guard follows the switch: the limit itself is read live, but
@@ -1579,6 +1594,12 @@ function mountRouter(ctx) {
     const same = target.provider === base.provider && target.model === base.model
     const declared = target.reasoningEffort
     if (same && (declared === undefined || declared === base.reasoningEffort)) return base
+    // Remember the route being applied, under the turn the error event will name.
+    // This is what makes a later failure attributable WITHOUT a model on the event.
+    remember(applied, `${String(session.id)}\u0000${String(payload.turn)}`, {
+      provider: target.provider,
+      model: target.model,
+    })
     const routed = {
       ...base,
       ...same ? {} : { provider: target.provider, model: target.model },
@@ -1624,11 +1645,31 @@ function mountRouter(ctx) {
     // Remember WHICH route just failed. A pool is exhausted only when every
     // candidate has failed, which is the difference between "try the next
     // model" and "this task cannot serve this turn at all".
-    diagnostics.providerFailed(payload.provider)
+    //
+    // Which route failed comes from what this plugin APPLIED, not from the event:
+    // the event names the provider and no model at all
+    // (`agent-loop/src/agent.ts:448-457`), so the old lookup wrote
+    // `provider\0undefined` — a key no pool entry can match, which left every
+    // candidate looking untried and the retry loop unterminated. Measured live:
+    // 164 attempts at a 429 quota, alternating models on every rotation.
+    const failedRoute = applied.get(key)
+    diagnostics.providerFailed(payload.provider ?? failedRoute?.provider)
     const failed = exhausted.get(`${key}\u0000${taskId}`) ?? new Set()
-    failed.add(`${String(payload.provider)}\u0000${String(payload.model)}`)
+    failed.add(`${String(failedRoute?.provider ?? payload.provider)}\u0000${String(failedRoute?.model ?? '')}`)
     remember(exhausted, `${key}\u0000${taskId}`, failed)
     const untried = (task.pool ?? []).filter(entry => !failed.has(`${entry.provider}\u0000${entry.model}`))
+
+    // A hard budget, whatever the cause. The cascade below can only terminate if
+    // failures stay ATTRIBUTABLE and every candidate eventually gets marked; a
+    // failure shape nobody anticipated must not be able to spin forever, because
+    // each turn of the loop costs a real provider call.
+    const spent = (retries.get(key) ?? 0) + 1
+    remember(retries, key, spent)
+    const budget = (task.pool ?? []).length + 2
+    if (spent > budget) {
+      console.log(`${ROUTER_NAME}: ${task.id} spent its retry budget (${budget}); leaving the turn to the caller`)
+      return decision
+    }
 
     if (untried.length > 0 && task.pool.length > 1) {
       // Advance the rotation AND pin what it advanced to: without the pin the
@@ -2198,7 +2239,11 @@ function mountRouter(ctx) {
       enabled: document().enabled === true,
       tasks: (document().tasks ?? []).length,
       defaultTaskId: document().defaultTaskId ?? "",
-      stats: scheduler.stats(),
+      // The live tasks are passed in so every rotation is brought up to date
+      // before it is described: a pool just edited in the settings page must not
+      // be reported as the pool it used to be.
+      stats: scheduler.stats((document().tasks ?? []).filter(task => task.enabled !== false
+        && (task.pool ?? []).length > 0)),
     },
     delegation: {
       tool: DELEGATION_TOOL,

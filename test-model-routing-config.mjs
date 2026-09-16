@@ -271,6 +271,52 @@ check('an unknown reply resolves to nothing', parseClassifierReply('astrology', 
   check('an empty pool yields no candidate', scheduler.next({ id: 't', pool: [] }, 's', 1).candidate, undefined)
 }
 
+// The readout must not lie about the rotation it describes.
+//
+// `weights` used to carry the internal smooth-WRR ACCUMULATORS — which start
+// empty and go negative by design (the winner is decremented by the total), so a
+// nine-model pool printed `-11,1,1,…` and the page repeated it. `next` compared
+// the CURRENT accumulators, while `pick()` adds each weight first and compares
+// after, so the two disagree as soon as the weights differ. Both were measured
+// live; both are asserted here.
+{
+  const scheduler = createScheduler()
+  const task = {
+    id: 'w',
+    pool: [
+      { provider: 'p', model: 'a', weight: 3 },
+      { provider: 'p', model: 'b', weight: 1 },
+    ],
+  }
+  const predicted = []
+  const actual = []
+  for (let index = 0; index < 8; index += 1) {
+    predicted.push(scheduler.stats([task]).w.next.model)
+    actual.push(scheduler.next(task, 's1', index).candidate.model)
+  }
+  check('the predicted next candidate is the one the pick returns', predicted, actual)
+  check('the weights reported are the configured ones, not accumulators',
+    scheduler.stats([task]).w.weights, [3, 1])
+  check('and the routes behind them are named', scheduler.stats([task]).w.candidates, ['p/a', 'p/b'])
+  check('the 3:1 pool really delivers 3:1 over a full cycle',
+    [actual.filter(model => model === 'a').length, actual.filter(model => model === 'b').length], [6, 2])
+
+  // A pool edited after the rotation was built must be described as the NEW pool:
+  // passing the live tasks rebuilds it, which is what the settings page needs.
+  const edited = {
+    id: 'w',
+    pool: [
+      { provider: 'p', model: 'a', weight: 1 },
+      { provider: 'p', model: 'c', weight: 1 },
+    ],
+  }
+  check('a pool edited after the fact is described as it is now',
+    scheduler.stats([edited]).w.candidates, ['p/a', 'p/c'])
+  check('and its weights are the new ones', scheduler.stats([edited]).w.weights, [1, 1])
+  check('while a rotation that was never picked is still described',
+    scheduler.stats([{ id: 'fresh', pool: [{ provider: 'p', model: 'z' }] }]).fresh.next.model, 'z')
+}
+
 check('weightOf defaults to 1', [weightOf({}), weightOf({ weight: 3 }), weightOf({ weight: 0 })], [1, 3, 1])
 
 // ── catalog reconciliation ──────────────────────────────────────────────────

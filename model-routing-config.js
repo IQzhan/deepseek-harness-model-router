@@ -944,18 +944,40 @@ export function createScheduler(options = {}) {
       pins.delete(`${sessionId}\u0000${turn === undefined ? 'session' : String(turn)}`)
     },
 
-    /** Per-task pick counts and the next candidate, for a settings readout. */
-    stats() {
+    /**
+     * Per-task rotation state, for a settings readout.
+     *
+     * @param tasks - the live tasks, when the caller has them: every rotation is
+     *   then brought up to date first, so a pool that was just edited is not
+     *   reported as the pool it used to be. Omitted, only tasks that have already
+     *   been picked are described.
+     * @returns per task the `picks` count, the CONFIGURED `weights`, the routes
+     *   the rotation is built from, and the candidate `pick()` would return next.
+     */
+    stats(tasks) {
       const out = {}
-      for (const [taskId, state] of rotations) {
-        const best = state.schedule.reduce(
-          (winner, entry, index) => ((state.weights[index] ?? 0) > (state.weights[winner] ?? 0) ? index : winner),
-          0,
-        )
+      const ids = Array.isArray(tasks)
+        ? tasks.map(task => task?.id).filter(id => typeof id === 'string')
+        : [...rotations.keys()]
+      for (const taskId of ids) {
+        const task = Array.isArray(tasks) ? tasks.find(entry => entry?.id === taskId) : undefined
+        // `rotationFor` is the same function `pick()` uses, so what is described
+        // here cannot drift from how the rotation actually advances.
+        const state = task === undefined ? rotations.get(taskId) : rotationFor(taskId, task.pool ?? [])
+        if (state === undefined) continue
         out[taskId] = {
           picks: counts.get(taskId) ?? 0,
-          next: state.schedule[best]?.candidate ?? null,
-          weights: state.weights.map(value => Math.round(value * 1000) / 1000),
+          // The CONFIGURED weights. The running accumulators are internal: they
+          // start empty and go NEGATIVE by design (the winner is decremented by
+          // the total), so reporting them as "weights" was a lie — measured live,
+          // it printed `-11,1,1,…` for a pool of nine.
+          weights: state.schedule.map(entry => Math.round(entry.weight * 1000) / 1000),
+          candidates: state.schedule.map(entry => `${entry.candidate.provider}/${entry.candidate.model}`),
+          // What the NEXT pick returns — computed the way `pick()` computes it
+          // (add each weight to its accumulator, then take the largest). Reading
+          // the current accumulators instead answers a different question, and the
+          // two disagree as soon as the weights are not all equal.
+          next: nextCandidate(state),
         }
       }
       return out
@@ -981,6 +1003,25 @@ export function createScheduler(options = {}) {
     const fresh = { schedule: scheduleOf(pool), weights: [] }
     rotations.set(taskId, fresh)
     return fresh
+  }
+
+  /**
+   * The candidate `pick()` would return, without advancing the rotation.
+   *
+   * Mirroring `pick()` exactly matters: the same addition, the same comparison,
+   * the same tie-break (the earliest index wins).
+   */
+  function nextCandidate(state) {
+    let best = 0
+    let bestValue = Number.NEGATIVE_INFINITY
+    for (let index = 0; index < state.schedule.length; index += 1) {
+      const value = (state.weights[index] ?? 0) + state.schedule[index].weight
+      if (value > bestValue) {
+        bestValue = value
+        best = index
+      }
+    }
+    return state.schedule[best]?.candidate ?? null
   }
 
   /**

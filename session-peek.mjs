@@ -193,5 +193,21 @@ if (rest.includes('--tools')) {
   console.log(`${path}: ${tools.length} tools in the last assembled request`)
   console.log(`  ${tools.join(' ')}`)
 }
+if (rest.includes('--attempts')) {
+  // Why one step was attempted again and again: the finish reason of every attempt.
+  const attempts = records.filter(record => record?.type === 'assistant/attempt')
+  const seen = new Map()
+  for (const record of attempts) {
+    const finish = (record.data?.stream ?? [])
+      .map(chunk => chunk?.chunk).find(chunk => chunk?.type === 'finish')
+    const reason = finish?.reason ?? {}
+    const failure = reason.failure ?? reason.error ?? {}
+    const key = `${reason.kind ?? '?'} :: ${failure.code ?? ''} ${String(failure.message ?? '').slice(0, 140)}`
+      .replace(/\s+/gu, ' ')
+    seen.set(key, (seen.get(key) ?? 0) + 1)
+  }
+  console.log(`${path}: ${attempts.length} attempts, ${seen.size} distinct outcome`)
+  for (const [key, count] of [...seen].sort((a, b) => b[1] - a[1])) console.log(`  x${count}  ${key}`)
+}
 console.log(`${path}: ${records.length} records, ${filtered.length} shown`)
 for (const line of filtered.slice(-tail)) console.log(line.slice(0, 400))
