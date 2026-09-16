@@ -1,5 +1,7 @@
-# Run every check
+# Rebuild and run every offline suite.
+#
+# Kept next to the node runner because a Windows checkout often starts with
+# PowerShell: same work, same verdict.
 $ErrorActionPreference = "Stop"
-node build-router.mjs | Out-Null
-node test-model-routing-config.mjs | Select-String "passed"
-node test-router-host.mjs | Select-String "passed"
+node build-router.mjs
+node run-tests.mjs
