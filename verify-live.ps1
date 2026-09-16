@@ -44,6 +44,10 @@ Check "路由总开关已启用" ($health.routing.enabled -eq $true) "(enabled=$
 Check "至少有一个任务" ([int]$health.routing.tasks -gt 0) "(tasks=$($health.routing.tasks))"
 Check "委派服务在插件作用域里可见" ($health.delegation.service -eq $true) `
   "(service=$($health.delegation.service) → 找不到 subagents.start，安装根本不会开始)"
+# 递归防线：屏蔽在子会话自己的作用域上无效（实测真的出过孙子会话），
+# 真正生效的是服务上的深度守卫。
+Check "委派深度守卫已生效" ($health.delegation.depthGuard -eq $true) `
+  "(depthGuard=$($health.delegation.depthGuard) → 子会话可能真的能再派一层；看 errors[] 里的 'delegation depth guard')"
 Check "熔断未跳闸" ($health.breaker.tripped -ne $true) "($($health.breaker.reason))"
 
 # 每个"被授权且还活着"的 agent 都必须真的挑起了接管。这是本脚本的核心断言：

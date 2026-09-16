@@ -776,6 +776,7 @@ function delegationPolicy(config, toolName, messageTool) {
     )
   }
   if (tasks.length > 0) {
+    const hasDefault = typeof config.defaultTaskId === 'string' && config.defaultTaskId.length > 0
     lines.push(
       '',
       'Pass `task` to select the executor class; the harness then picks the model itself:',
@@ -785,7 +786,15 @@ function delegationPolicy(config, toolName, messageTool) {
         return `- ${task.id}: ${description}${keywords.length === 0 ? '' : `（例如：${keywords.slice(0, 4).join('、')}）`}`
       }),
       '',
-      'Omit `task` only when none of them fits: the harness then classifies the request by meaning.',
+      // The omission rule is stated as the deployment actually behaves. Claiming
+      // classification while it is switched off would be a promise the tool cannot
+      // keep — the model would omit `task` expecting a judgment that never comes.
+      config.classifier?.enabled === true
+        ? 'Omit `task` only when none of them fits: the harness then classifies the request by meaning.'
+        : hasDefault
+          ? 'Always pass `task`: semantic classification is switched off here, so an omitted one runs on the default task.'
+          : 'Always pass `task`: semantic classification is switched off and there is no default task, so an omitted'
+            + ' one keeps the child it was given.',
     )
   }
   lines.push(
@@ -873,9 +882,10 @@ function buildDelegationTool(options) {
       // An allow list by default; the task's own declaration wins when it has
       // one, and childDelegation: true asks for children that CAN delegate, so
       // nothing is filtered away from them.
-      const filter = declared?.childTools != null
-        ? childToolFilter(declared)
-        : childDelegation === true ? undefined : childAllowList(parent)
+      const filter = childToolFilter(
+        declared?.childTools,
+        childDelegation === true ? undefined : childAllowList(parent),
+      )
       /** The start request, with or without the task's tool filter. */
       const requestWith = (useFilter) => ({
         label: args.description,
@@ -1069,37 +1079,43 @@ function isDelegationTool(name) {
 }
 
 /**
- * The tool filter a task gives its children, if any.
+ * The tool filter a delegation gives its child.
  *
- * Recursion is governed HERE and not by whatever preset the child runs: when the
- * operator has not enabled child delegation, the delegation tool names are
- * denied on top of the task's own filter, so a child cannot re-delegate even if
- * its composition happens to carry a delegation row.
+ * Recursion is governed here rather than by the child's preset, which this plugin
+ * cannot edit. The only filter form that REMOVES inherited delegation tools is an
+ * ALLOW list; naming those tools in `deny` is refused by the provider ("unknown
+ * global tool"), and a refused filter is dropped ENTIRELY — measured live, and
+ * the opposite of protecting anything.
  *
- * @param task - the resolved task, or undefined for an unclassified delegation.
- * @param childDelegation - the operator's switch; true allows one level more.
+ * So an operator's two statements are folded together instead of one replacing
+ * the other:
+ *
+ *   · `allow` — what a child may have. It already excludes everything else,
+ *     delegation included, so it stands as written.
+ *   · `deny` — "no `pwsh` for these children". It is applied ON TOP of the
+ *     default allow list, so declaring one no longer silently hands the child
+ *     back the controller tools that list had removed.
+ *
+ * @param declared - the task's `childTools`, when it declares one.
+ * @param base - the deployment's default allow list, undefined when the operator
+ *   allows children to delegate.
  * @returns a `ToolRestriction`, or undefined when nothing needs restricting.
  */
-function childToolFilter(task) {
-  const declared = task?.childTools !== null && typeof task?.childTools === 'object' ? task.childTools : {}
-  const allow = Array.isArray(declared.allow) ? [...declared.allow] : undefined
-  const deny = Array.isArray(declared.deny) ? [...declared.deny] : []
-  // Recursion is NOT enforced here, deliberately.
-  //
-  // This filter is validated by the subagent provider against the CHILD's tool
-  // registry, and this plugin's own tool names live in the PARENT's scope: naming
-  // them is refused outright ("unknown global tool"), which drops the ENTIRE
-  // filter — the opposite of protecting anything. Measured live, on every
-  // delegation, which is how it was found.
-  //
-  // What actually keeps a child from delegating, in order: the child never gets
-  // this plugin's tools installed, `maxDepth` refuses a grandchild at the
-  // provider, and both tools refuse a subagent caller at execution.
-  if (allow === undefined && deny.length === 0) return undefined
-  return {
-    ...allow === undefined ? {} : { allow },
-    ...deny.length === 0 ? {} : { deny },
+function childToolFilter(declared, base) {
+  const allow = Array.isArray(declared?.allow) ? [...declared.allow] : undefined
+  const deny = Array.isArray(declared?.deny) ? [...declared.deny] : []
+  // An explicit `allow` IS the operator's statement of what a child may have: it
+  // already excludes everything else, delegation included.
+  if (allow !== undefined) return allow.length === 0 ? undefined : { allow }
+  if (deny.length === 0) return base
+  // A `deny` is folded INTO the default allow list rather than replacing it. The
+  // two are independent statements ("no `pwsh`" and "no delegation"), and letting
+  // one erase the other is how a child kept a controller tool nobody gave it.
+  if (base !== undefined) {
+    const kept = base.allow.filter(name => !deny.includes(name))
+    return kept.length > 0 ? { allow: kept } : undefined
   }
+  return { deny }
 }
 
 /**
@@ -1249,6 +1265,9 @@ function mountRouter(ctx) {
     banned.clear()
     diagnostics.reset()
     void syncDelegation(true)
+    // The depth guard follows the switch: the limit itself is read live, but
+    // whether the guard is installed at all depends on `enabled`.
+    syncDepthGuard()
   }
 
   // Files change without anyone telling the plugin: a hand-edit, an editor save,
@@ -1598,18 +1617,30 @@ function mountRouter(ctx) {
       scheduler.unpin(String(session.id), payload.turn)
       scheduler.pin(String(session.id), payload.turn, task.id, next)
       routed.delete(key)
-      decisions.delete(key)
+      // The CLASSIFIER's decision is deliberately NOT deleted. It is a judgment
+      // about the request text, which a failed model does not change — and
+      // re-asking is not free of consequences: a classifier is an LLM, so the
+      // same input can come back as a different task, and a turn would silently
+      // switch what it is doing because one provider was rate-limited. Measured
+      // live: a child whose first dispatch resolved to the default task was sent
+      // to a different task by its retry, from the same opener. Rotating the pool
+      // is the retry's job; the classification stands for the turn.
       console.log(`${ROUTER_NAME}: rotating ${task.id} after a failed request`)
       return { kind: 'retry' }
     }
 
     // The task's whole pool is spent. Ban it for this turn so the retry cannot
     // resolve straight back into it, then hand the turn to the default task.
+    //
+    // The ban — not a forgotten classification — is what moves the retry: with
+    // the turn's decision still cached, the retry sees the classified task as
+    // banned and settles on the default task, which is the documented cascade.
+    // Deleting the decision instead would re-ask an LLM mid-turn and let the
+    // answer, rather than the failure, decide where the turn goes.
     const bannedIds = banned.get(key) ?? new Set()
     bannedIds.add(taskId)
     remember(banned, key, bannedIds)
     routed.delete(key)
-    decisions.delete(key)
     scheduler.unpin(String(session.id), payload.turn)
 
     const fallback = tasks.find(candidate => candidate.id === config.defaultTaskId
@@ -1839,6 +1870,9 @@ function mountRouter(ctx) {
     const maskDelegation = live.childDelegation !== true
     if (!maskDelegation && persona === '') return undefined
     const state = { kind: 'child', applied: false, error: undefined }
+    /** Delegation names this child's own scope refused to give up. */
+    const unmasked = []
+    state.unmasked = unmasked
     const fiber = agent.ctx.plugin({
       name: `${ROUTER_NAME}:child`,
       inject: ['tools'],
@@ -1860,7 +1894,17 @@ function mountRouter(ctx) {
             for (const name of new Set([DELEGATION_TOOL, MESSAGE_TOOL, ...BUILTIN_DELEGATION])) {
               try {
                 disposers.push(childCtx.tools.restrict({ deny: [name] }))
-              } catch { /* not visible in this scope: nothing to mask */ }
+              } catch {
+                // A name the CHILD'S OWN scope registered cannot be restricted
+                // from outside, and a preset that mounts a delegation row of its
+                // own registers exactly that. Measured live: the child kept
+                // `subagent` from its own preset no matter what this side did.
+                // The recursion guarantee does not rest on this mask (`maxDepth`
+                // refuses a grandchild at the provider), but silence would leave
+                // the operator believing the mask worked — so the names that
+                // could NOT be masked are reported in health instead.
+                unmasked.push(name)
+              }
             }
           }
           if (persona !== '' && typeof childCtx.systemPrompt?.section === 'function') {
@@ -1991,6 +2035,86 @@ function mountRouter(ctx) {
   }, 'dsh-model-router: delegation tools')
   void syncDelegation()
 
+  // ── the delegation depth policy, enforced where every path meets ──────────
+  //
+  // `maxDepth` rides the start requests THIS plugin makes, and that is all it
+  // governs. A child's own preset composition registers the built-in delegation
+  // tool into the CHILD's scope, and a scope-local registration cannot be masked
+  // from outside — two live experiments settled that: naming it in a filter's
+  // `deny` is refused ("unknown global tool", which drops the whole filter), and
+  // an allow list leaves it in place. Measured cost of not knowing: with
+  // `childDelegation: false`, a child called `subagent` and a depth-2 grandchild
+  // really was created.
+  //
+  // So the policy is enforced one level down, on the service every delegation
+  // path funnels through. The wrapper is installed on the live service instance,
+  // removed with the plugin's fiber, and a guard that could NOT be installed is
+  // recorded — a guard rail that is silently absent is worse than none.
+  let depthGuard = undefined
+
+  /** Refuse a delegation that would exceed the operator's depth budget. */
+  function installDepthGuard(subagents, limitOf) {
+    const restore = []
+    const error = () => {
+      throw new Error(
+        'this subagent is an executor and does not delegate further; return the parts that need '
+        + 'independent work to the parent instead',
+      )
+    }
+    for (const method of ['start', 'startContinuable']) {
+      const original = subagents[method]
+      if (typeof original !== 'function') continue
+      const guarded = function (...args) {
+        // `start(provider, request)` and `startContinuable(spec)` differ in both
+        // arity and nesting: the request is the second argument of the first, and
+        // `spec.request` of the second.
+        const request = args.length > 1 ? args[1] : args[0]
+        const parent = request?.parent ?? request?.request?.parent
+        const depth = parent?.session?.header?.delegationDepth
+        if ((typeof depth === 'number' ? depth : 0) >= limitOf()) error()
+        return original.apply(this, args)
+      }
+      try {
+        subagents[method] = guarded
+        if (subagents[method] !== guarded) throw new Error(`${method} is not writable`)
+        restore.push(() => { subagents[method] = original })
+      } catch (failure) {
+        // Reported, never assumed: another plugin may have frozen the service,
+        // and then the depth policy is simply not in force.
+        diagnostics.fail('delegation depth guard', failure)
+        console.error(`${ROUTER_NAME}: could not guard ${method} against deep delegation`)
+      }
+    }
+    return restore.length === 0
+      ? undefined
+      : () => { for (const undo of restore.reverse()) undo() }
+  }
+
+  /** Install, remove, or leave the depth guard alone, to match the document. */
+  function syncDepthGuard() {
+    const subagents = ctx.get('subagents')
+    const wanted = document().enabled === true && subagents !== undefined
+      && typeof subagents.start === 'function'
+    if (wanted && depthGuard === undefined) {
+      // `undefined` means nothing could be patched: health must then say the
+      // policy is NOT in force, which is the whole point of reporting it.
+      depthGuard = installDepthGuard(subagents, () => document().childDelegation === true ? 2 : 1)
+      if (depthGuard !== undefined) {
+        ctx.effect(() => () => {
+          depthGuard?.()
+          depthGuard = undefined
+        }, 'dsh-model-router: delegation depth guard')
+      }
+      return
+    }
+    if (!wanted && depthGuard !== undefined) {
+      depthGuard()
+      depthGuard = undefined
+    }
+  }
+
+  void syncDepthGuard()
+
   // ── the health channel ────────────────────────────────────────────────────
   //
   // ONE method, and only because it cannot be anything else: the settings page
@@ -2040,6 +2164,14 @@ function mountRouter(ctx) {
       tool: DELEGATION_TOOL,
       provider: DELEGATION_PROVIDER,
       installed: delegationFibers.size,
+      // The policy that actually stops a child from delegating further, and
+      // whether it is in force. It cannot be expressed by masking the child (its
+      // own preset registers a delegation tool the plugin cannot remove) nor by
+      // `maxDepth` (that governs only this plugin's own start requests), so it is
+      // enforced on the delegation service itself — and reported here, because an
+      // uninstalled guard is exactly the state that let a grandchild exist.
+      depthGuard: depthGuard !== undefined,
+      depthLimit: document().childDelegation === true ? 2 : 1,
       // How many of those fibers have RUN their startup body. `installed` counts
       // fibers that exist; Cordis starts a plugin asynchronously, so a fiber can
       // exist for a moment — or forever, when a service never becomes available
@@ -2051,7 +2183,6 @@ function mountRouter(ctx) {
       // Whether the service this plugin starts children through is visible in
       // the plugin's OWN scope. When it is not, no installation is attempted at
       // all — the second, independent reason `installed` can be 0, and the one
-      // that has nothing to do with the fiber lifecycle above.
       service: typeof ctx.get('subagents')?.start === 'function',
       childDelegation: document().childDelegation === true,
       // WHY it is or is not installed, per live agent. A bare `installed: 0`
@@ -2075,6 +2206,12 @@ function mountRouter(ctx) {
               kind: state?.kind ?? null,
               applied: state?.applied === true,
               error: state?.error ?? null,
+              // Delegation tools this child's OWN preset registered and no
+              // outside mask could remove. Reported rather than hidden: the
+              // recursion guarantee rests on `maxDepth`, not on this list being
+              // empty, and an operator deserves to know which of the two is
+              // actually holding.
+              unmasked: state?.unmasked ?? [],
             }
           })
         } catch (error) {

@@ -158,6 +158,22 @@ function typeCounts(records) {
   return [...counts].sort((a, b) => b[1] - a[1]).map(([type, count]) => `${type} x${count}`)
 }
 
+/**
+ * The tool names the LAST assembled request carried.
+ *
+ * This is the only honest way to check what a child was actually GIVEN: masks and
+ * allow lists are applied by the runtime, so the assembled header — not the
+ * configuration, and not the plugin's own report — is the evidence.
+ */
+function headerTools(records) {
+  let names = []
+  for (const record of records) {
+    if (record?.type !== 'request/header') continue
+    names = (record.data?.header?.tools ?? []).map(tool => tool?.name).filter(name => typeof name === 'string')
+  }
+  return names
+}
+
 const out = []
 if (wantRoutes) {
   for (const record of records) {
@@ -171,6 +187,11 @@ const filtered = grep === undefined ? out : out.filter(line => line.includes(gre
 if (rest.includes('--types')) {
   console.log(`${path}: ${records.length} records`)
   for (const line of typeCounts(records)) console.log(`  ${line}`)
+}
+if (rest.includes('--tools')) {
+  const tools = headerTools(records)
+  console.log(`${path}: ${tools.length} tools in the last assembled request`)
+  console.log(`  ${tools.join(' ')}`)
 }
 console.log(`${path}: ${records.length} records, ${filtered.length} shown`)
 for (const line of filtered.slice(-tail)) console.log(line.slice(0, 400))

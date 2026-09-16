@@ -196,7 +196,7 @@ const presetRoster = {
  */
 function fakeAgent({
   preset = 'diy-smart', origin = undefined, id = 'a1', builtins = ['subagent', 'subagent_fork'], parent = undefined,
-  startupGate = undefined, failRegister = undefined, failSection = false,
+  startupGate = undefined, failRegister = undefined, failSection = false, depth = undefined,
 } = {}) {
   // Layered like the real runtime: the scope's OWN registrations shadow the
   // inherited ones, and removing an own registration restores what it shadowed.
@@ -217,6 +217,7 @@ function fakeAgent({
         agentPreset: preset,
         ...origin === undefined ? {} : { origin },
         ...parent === undefined ? {} : { parentSession: parent },
+        ...depth === undefined ? {} : { delegationDepth: depth },
       },
     },
     sections,
@@ -672,7 +673,64 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
   check('a new turn classifies again', stubs.llm.requests.length, 2)
 }
 
-// 8. A classifier that fails degrades to the default task, not a broken turn.
+// 7b. A RETRY reuses the turn's classification instead of re-asking.
+//
+// A classifier is an LLM: the same request can come back as a different task. So
+// a mid-turn retry that re-asks it lets a provider failure — not the request —
+// decide what the turn is doing. Measured live: a child whose first dispatch
+// resolved to the default task was sent to a different task by its retry, from
+// the same opener and the same turn. The classification is a judgment about the
+// TEXT, which a failed model does not change; only the pool rotates.
+{
+  // The classifier answers `other` first and `third` on any second call, and each
+  // task's pool sits on a different provider — so a re-ask is visible in the
+  // route, not just in a call count.
+  const stubs = await mount(undefined, ['other', 'third'])
+  enable(stubs, {
+    defaultTaskId: 'general',
+    tasks: [
+      { id: 'general', name: '通用', description: '日常', enabled: true,
+        pool: [{ provider: 'b-ai', model: 'qwen3.8-flash', weight: 1 }] },
+      { id: 'other', name: '别的', description: '别的', enabled: true,
+        pool: [{ provider: 'google', model: 'gemini-3.7-flash', weight: 1 },
+          { provider: 'google', model: 'gemini-3.6-flash', weight: 1 }] },
+      { id: 'third', name: '第三', description: '第三', enabled: true,
+        pool: [{ provider: 'dashscope', model: 'qwen3.7-flash', weight: 1 }] },
+    ],
+  })
+  const document = stubs.settings.value()
+  document.classifier = { enabled: true, provider: 'openrouter', model: 'openrouter/free', maxInputTokens: 4000, timeoutMs: 5000 }
+
+  const agent = { session: session({ id: 'retry-1', messages: [['user', '随便聊聊']] }) }
+  const first = await request(stubs.listeners, agent, 1)
+  check('the classifier decides the turn', [first.provider, first.model], ['google', 'gemini-3.7-flash'])
+
+  // The model fails; the router asks for a retry.
+  const retry = await stubs.listeners.get('agent/request-error')(
+    { agent, turn: 1, provider: 'google', model: 'gemini-3.7-flash' },
+    async () => undefined,
+  )
+  check('a failed request still asks for a retry', retry, { kind: 'retry' })
+
+  const second = await request(stubs.listeners, agent, 1)
+  check('and the retry stays on the CLASSIFIED task, rotating only its pool',
+    [second.provider, second.model], ['google', 'gemini-3.6-flash'])
+  check('so the classifier is asked exactly once for the turn', stubs.llm.requests.length, 1)
+
+  // That pool is spent too. The ban moves the turn to the DEFAULT task — the
+  // cached classification must not be replaced by a fresh (different) answer.
+  const spent = await stubs.listeners.get('agent/request-error')(
+    { agent, turn: 1, provider: 'google', model: 'gemini-3.6-flash' },
+    async () => undefined,
+  )
+  check('a spent pool falls back to the default task', spent, { kind: 'retry' })
+  const settled = await request(stubs.listeners, agent, 1)
+  check('the retry then runs on the default task, not on a re-asked answer',
+    [settled.provider, settled.model], ['b-ai', 'qwen3.8-flash'])
+  check('and the classifier was still asked only once', stubs.llm.requests.length, 1)
+}
+
+
 {
   const stubs = await mount()
   enable(stubs, {
@@ -1162,7 +1220,6 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
     mine.description.includes('the child that got the task keeps it'), true)
   check('the task argument is an enum of the enabled tasks',
     mine.parameters.properties.task.enum, ['modelling', 'general'])
-
   // Revoking the grant restores the deployment exactly.
   stubs.settings.value().presets = {}
   await mountSync(stubs)
@@ -1170,6 +1227,48 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
   check('and the built-in is visible again',
     agent.registered.get('subagent').description, 'built-in subagent')
   check('and every mask it installed is lifted', agent.restrictions, [])
+}
+
+// 18-0. The omission rule in the delegation policy matches how the deployment
+//       actually behaves.
+//
+// The policy tells the model when it may leave `task` out. Claiming the request
+// will be classified while classification is switched OFF is a promise the tool
+// cannot keep: the model omits the argument expecting a judgment that never
+// comes, and the turn quietly runs on the default task instead of the one it
+// meant. Three states, three sentences — and the middle one is why an operator
+// who turns the classifier off still gets told what happens.
+{
+  const withClassifier = async (classifier, defaultTaskId) => {
+    const stubs = await mount()
+    const agent = fakeAgent({ preset: 'diy-smart' })
+    stubs.ctx.agents.push(agent)
+    stubs.listeners.get('agent/created')({ agent })
+    enable(stubs, { preset: 'diy-smart', defaultTaskId })
+    stubs.settings.value().classifier = classifier
+    await mountSync(stubs)
+    return agent.registered.get('subagent').description
+  }
+
+  const on = await withClassifier(
+    { enabled: true, provider: 'openrouter', model: 'openrouter/free', maxInputTokens: 4000, timeoutMs: 5000 }, 'general',
+  )
+  check('with the classifier on, the policy says an omitted task is classified',
+    on.includes('the harness then classifies the request by meaning'), true)
+
+  const offWithDefault = await withClassifier(
+    { enabled: false, provider: 'openrouter', model: 'openrouter/free', maxInputTokens: 4000, timeoutMs: 5000 }, 'general',
+  )
+  check('with it off and a default task, the policy says the default serves it',
+    offWithDefault.includes('an omitted one runs on the default task'), true)
+  check('and never promises classification', 
+    offWithDefault.includes('classifies the request by meaning'), false)
+
+  const offWithoutDefault = await withClassifier(
+    { enabled: false, provider: 'openrouter', model: 'openrouter/free', maxInputTokens: 4000, timeoutMs: 5000 }, '',
+  )
+  check('with it off and no default, the policy says the child is kept',
+    offWithoutDefault.includes('keeps the child it was given'), true)
 }
 
 // 18-1. A fiber is OWNED from the instant it exists, not from the instant its
@@ -1565,6 +1664,74 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
     subagents.starts[2].request.toolFilter, undefined)
 }
 
+// 18j. A task's `deny` is folded into the deployment's allow list, not swapped
+//      for it — and a mask the child's own scope refuses is REPORTED.
+//
+// Measured live: a child's own preset registers `subagent` into the child's OWN
+// scope, so no outside mask can take it away, and naming it in a filter's `deny`
+// is refused outright ("unknown global tool") — which DROPS the whole filter, so
+// the task's own `deny` silently stopped working too. Two consequences, both
+// covered here: the two statements must be combined, and what could not be masked
+// must be visible in health instead of swallowed.
+{
+  const agent = fakeAgent({ preset: 'diy-smart', builtins: ['subagent'] })
+  // A parent with real tools: the allow list is built from the ASSEMBLED header,
+  // so the fake has to carry the same accessor a real session does.
+  agent.session.requestHeader = () => ({
+    config: { provider: 'deepseek-official', model: 'deepseek-flash' },
+    tools: ['read', 'grep', 'pwsh', 'send_message', 'list_agents', 'subagent']
+      .map(name => ({ name, description: '', parameters: {} })),
+  })
+  const subagents = makeSubagents()
+  const stubs = await mount(undefined, undefined, { agents: [agent], subagents })
+  enable(stubs, {
+    preset: 'diy-smart',
+    tasks: [
+      { id: 'modelling', name: '3D', description: '三维', enabled: true,
+        childTools: { deny: ['pwsh'] },
+        pool: [{ provider: 'google', model: 'gemini-3.7-flash', weight: 1 }] },
+    ],
+  })
+  await mountSync(stubs)
+
+  const children = []
+  subagents.onCreate = (parentAgent) => {
+    const child = fakeAgent({
+      preset: 'diy-smart', origin: 'subagent', id: `c${children.length + 1}`,
+      parent: parentAgent.session.id, builtins: [...parentAgent.registered.keys()],
+    })
+    children.push(child)
+    stubs.ctx.agents.push(child)
+    stubs.listeners.get('agent/created')({ agent: child })
+  }
+
+  await agent.registered.get('subagent').execute(
+    { description: 'part', prompt: 'Build it.', task: 'modelling' },
+    { agent, signal: new AbortController().signal },
+  )
+  const filter = subagents.starts[0].request.toolFilter
+  check('a task deny is folded into the allow list', filter.allow.includes('pwsh'), false)
+  check('the tools the task did not deny survive', filter.allow.includes('read'), true)
+  check('and the allow list never NAMES a delegation tool (that refusal drops it all)',
+    filter.allow.includes('subagent'), false)
+  check('nor the controller tools', [filter.allow.includes('send_message'), filter.allow.includes('list_agents')],
+    [false, false])
+  check('and no deny list rides along to be refused', filter.deny, undefined)
+
+  // A mask the child scope refuses must be REPORTED, not swallowed. The double
+  // refuses a name the scope cannot see (here: the three built-ins this parent
+  // never had); in a LIVE child the refused name is `subagent`, because the
+  // child's own preset registers it into the child's own scope — measured, and
+  // the reason health carries this list at all.
+  const health = await stubs.handlers.get('health')()
+  const row = health.delegation.agents.find(entry => entry.origin === 'subagent')
+  check('masks the child refused are reported in health', row?.unmasked,
+    ['subagent_fork', 'subagent_codex', 'subagent_claude_code'])
+  check('while the masks that worked are not listed',
+    (row?.unmasked ?? []).includes('subagent_message'), false)
+}
+
+
 // 18h. A tool filter the child cannot honour loses the FILTER, not the
 //      delegation — and only a filter refusal is retried.
 {
@@ -1681,6 +1848,89 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
   check('no readable tool header means no filter at all',
     second.starts[0].request.toolFilter, undefined)
 }
+
+// 18-5. The delegation depth policy is enforced on the SERVICE, not by masking.
+//
+// A child's own preset composition registers a delegation tool into the CHILD's
+// scope, and no outside mask can remove it — two live experiments: naming it in a
+// filter's `deny` is refused ("unknown global tool", dropping the whole filter),
+// and an allow list leaves it in place. The cost of relying on masking was a real
+// depth-2 grandchild created while `childDelegation: false`. `maxDepth` governs
+// only this plugin's own start requests, so the policy lives on `ctx.subagents`,
+// which every delegation path funnels through.
+{
+  const main = fakeAgent({ preset: 'diy-smart', id: 'main-1' })
+  const child = fakeAgent({ preset: 'diy-smart', origin: 'subagent', id: 'child-1', depth: 1, parent: 'main-1' })
+  const grandchild = fakeAgent({ preset: 'diy-smart', origin: 'subagent', id: 'gc-1', depth: 2, parent: 'child-1' })
+  const subagents = makeSubagents()
+  // Captured BEFORE the plugin mounts: this is what "no trace left behind" means.
+  const untouched = subagents.start
+  const stubs = await mount(undefined, undefined, { agents: [main, child, grandchild], subagents })
+  // The guard belongs to an ENABLED plugin: turning it off must hand the shared
+  // service back untouched, which the end of this case asserts.
+  enable(stubs, { preset: 'diy-smart' })
+  await mountSync(stubs)
+
+  /** One delegation attempt, with a synchronous refusal normalized to a rejection. */
+  const attempt = (call) => {
+    try {
+      return Promise.resolve(call()).then(() => 'started')
+    } catch (error) {
+      return Promise.resolve(error.message)
+    }
+  }
+  const startFrom = parent => attempt(() => subagents.start('spawn', { prompt: 'x', parent }))
+  const continuableFrom = parent => attempt(() => subagents.startContinuable({
+    provider: 'spawn', label: 'l', request: { prompt: 'x', parent },
+  }))
+
+  check('the guard is in force', (await stubs.handlers.get('health')()).delegation.depthGuard, true)
+  check('and reports the budget it enforces', (await stubs.handlers.get('health')()).delegation.depthLimit, 1)
+
+  check('a main agent may still delegate', await startFrom(main), 'started')
+  check('a CHILD may not, even through the built-in path', await startFrom(child),
+    'this subagent is an executor and does not delegate further; return the parts that need '
+    + 'independent work to the parent instead')
+  check('nor through the continuable path',
+    (await continuableFrom(child)).startsWith('this subagent is an executor'), true)
+  check('and no start was recorded for either refusal', subagents.requests.length, 1)
+
+  // `childDelegation: true` buys exactly ONE more level — the depth budget is
+  // read from the live document, not baked in when the guard was installed.
+  stubs.settings.value().childDelegation = true
+  await mountSync(stubs)
+  check('with child delegation on, the budget is one level deeper',
+    (await stubs.handlers.get('health')()).delegation.depthLimit, 2)
+  check('a child may then delegate', await startFrom(child), 'started')
+  check('but a grandchild may not',
+    (await startFrom(grandchild)).startsWith('this subagent is an executor'), true)
+
+  // Turning the plugin off must LEAVE NO TRACE on the shared service.
+  stubs.settings.value().enabled = false
+  await mountSync(stubs)
+  check('disabling the plugin removes the guard',
+    (await stubs.handlers.get('health')()).delegation.depthGuard, false)
+  check('and the service is the original again', subagents.start === untouched, true)
+  check('so deep delegation is possible again', await startFrom(grandchild), 'started')
+}
+
+// 18-6. A guard that cannot be installed is REPORTED, not assumed.
+{
+  const main = fakeAgent({ preset: 'diy-smart', id: 'main-2' })
+  const subagents = makeSubagents()
+  // A frozen service is what another plugin could leave behind; the assignment
+  // then does nothing, and a silent no-op is exactly the state that let a
+  // grandchild exist.
+  Object.freeze(subagents)
+  const stubs = await mount(undefined, undefined, { agents: [main], subagents })
+  enable(stubs, { preset: 'diy-smart' })
+  await mountSync(stubs)
+  const health = await stubs.handlers.get('health')()
+  check('a guard that could not be installed is recorded',
+    health.errors.some(entry => entry.where === 'delegation depth guard'), true)
+  check('and health does not claim it is in force', health.delegation.depthGuard, false)
+}
+
 
 // 19. A task whose whole pool failed hands the turn to the default task; when
 //     that is spent too, the caller keeps the inherited route and works itself.
