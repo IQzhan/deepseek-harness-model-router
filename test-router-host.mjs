@@ -94,15 +94,43 @@ function makeSettings(base) {
 }
 
 /** A provider registry advertising two providers and a handful of models. */
-function makeLlm(models, replies) {
+function makeLlm(models, replies, resolved = {}) {
   const requests = []
+  const modelInfoCalls = []
   return {
     requests,
+    /** Every `resolveModelInfo` lookup, so caching can be asserted. */
+    modelInfoCalls,
     listProviders: () => [
       { id: 'google', name: 'Google' },
       { id: 'b-ai', name: 'B.AI' },
       { id: 'openrouter', name: 'OpenRouter' },
     ],
+    /**
+     * What one (provider, model) accepts for reasoning.
+     *
+     * `resolved` is scripted per route: `{ efforts: ['low', …] }` answers with
+     * that list, `{ noReasoning: true }` answers with NO reasoning block at all
+     * (the shape that used to kill a child mid-turn), `{ throws: '…' }` fails
+     * the lookup, and a route that is not scripted answers the same way — no
+     * reasoning block, which the adapter is entitled to say.
+     */
+    async resolveModelInfo(provider, model) {
+      modelInfoCalls.push(`${provider}/${model}`)
+      const scripted = resolved[`${provider}/${model}`]
+      if (scripted === undefined) return { provider, id: model, name: model }
+      if (typeof scripted.throws === 'string') throw new Error(scripted.throws)
+      if (scripted.noReasoning === true) return { provider, id: model, name: model }
+      return {
+        provider,
+        id: model,
+        name: model,
+        reasoning: {
+          efforts: scripted.efforts.map(id => ({ id, name: id })),
+          ...scripted.defaultEffort === undefined ? {} : { defaultEffort: scripted.defaultEffort },
+        },
+      }
+    },
     listModels: async (provider) => models
       .filter(entry => entry.provider === provider)
       .map(entry => ({ provider, id: entry.model, name: entry.name ?? entry.model })),
@@ -168,6 +196,7 @@ const presetRoster = {
  */
 function fakeAgent({
   preset = 'diy-smart', origin = undefined, id = 'a1', builtins = ['subagent', 'subagent_fork'], parent = undefined,
+  startupGate = undefined, failRegister = undefined, failSection = false,
 } = {}) {
   // Layered like the real runtime: the scope's OWN registrations shadow the
   // inherited ones, and removing an own registration restores what it shadowed.
@@ -207,6 +236,12 @@ function fakeAgent({
         const scope = {
           tools: {
             register(tool) {
+              // A tool runtime can refuse a registration (a duplicate name, a
+              // schema it rejects). Injecting that refusal is how the startup
+              // failure path stays covered.
+              if (failRegister !== undefined && failRegister(tool)) {
+                throw new Error(`the tool runtime refused to register ${JSON.stringify(tool.name)}`)
+              }
               own.set(tool.name, tool)
               const undo = () => own.delete(tool.name)
               owned.push(undo)
@@ -232,6 +267,7 @@ function fakeAgent({
           systemPrompt: {
             getSectionOrder: () => 0,
             section(definition) {
+              if (failSection) throw new Error('the prompt registry refused the section')
               sections.push(definition)
               const undo = () => {
                 const index = sections.indexOf(definition)
@@ -242,8 +278,6 @@ function fakeAgent({
             },
           },
         }
-        const result = definition.apply(scope)
-        if (typeof result === 'function') owned.push(result)
         const handle = fiber()
         const dispose = handle.dispose.bind(handle)
         handle.dispose = async () => {
@@ -251,6 +285,34 @@ function fakeAgent({
           await dispose()
         }
         agent.fiber = handle
+        // Cordis DEFERS a plugin's startup: `ctx.plugin()` returns the fiber
+        // BEFORE `apply` runs (the docs allow the startup body to be async).
+        //
+        // The stub models that, because a stub that ran `apply` inline made this
+        // plugin's worst defect invisible: it gated the returned fiber on a
+        // synchronous "did apply run?" flag, so in a live session the fiber was
+        // discarded while the tool stayed registered — health reported
+        // `installed: 0` beside a working delegation tool, and nothing could ever
+        // revoke it. Any code that assumes a synchronous registration now fails
+        // HERE, in the cheap suite.
+        queueMicrotask(async () => {
+          // A fiber disposed before its startup never starts — as in Cordis.
+          if (handle.disposed) return
+          try {
+            // A startup that AWAITS something (a service becoming available) is
+            // the normal case in Cordis, and `startupGate` lets a test hold it
+            // open so the pending state is observed instead of raced.
+            if (startupGate !== undefined) await startupGate.promise
+            if (handle.disposed) return
+            const result = definition.apply(scope)
+            if (typeof result === 'function') owned.push(result)
+          } catch (error) {
+            // Cordis records a failed startup on the fiber instead of throwing
+            // into the host loop, so the stub keeps it there for assertions.
+            handle.error = error
+            agent.applyError = error
+          }
+        })
         return handle
       },
     },
@@ -317,13 +379,19 @@ const MODELS = [
 /** Mount the generated plugin against fresh stubs. */
 async function mount(configOverrides, replies, extra = {}) {
   const settings = makeSettings()
-  const llm = makeLlm(MODELS, replies)
+  const llm = makeLlm(MODELS, replies, extra.resolved ?? {})
+  // `noResolver` models a build whose `llm` cannot resolve a model at all: the
+  // capability is ABSENT, which is a different fact from an adapter answering
+  // "this model has no reasoning levels".
+  if (extra.noResolver === true) delete llm.resolveModelInfo
   const handlers = new Map()
   const listeners = new Map()
   const logs = []
   const effects = []
   const agents = extra.agents ?? []
-  const subagents = extra.subagents ?? makeSubagents()
+  // `null` means "this build has no subagent service" — the second, independent
+  // reason the takeover can be absent, distinct from a startup that never ran.
+  const subagents = extra.subagents === null ? undefined : (extra.subagents ?? makeSubagents())
   const ctx = {
     settings,
     llm,
@@ -332,8 +400,9 @@ async function mount(configOverrides, replies, extra = {}) {
     subagents,
     get: (name) => (name === 'agentPresets' ? presetRoster
       : name === 'agents' ? { list: () => agents }
-        : name === 'subagents' ? subagents
-          : undefined),
+        : name === 'llm' ? llm
+          : name === 'subagents' ? subagents
+            : undefined),
     on: (event, listener) => { listeners.set(event, listener); return () => listeners.delete(event) },
     effect: (callback) => { const disposer = callback(); effects.push(disposer); return () => {} },
   }
@@ -399,6 +468,19 @@ async function request(listeners, agent, turn) {
 
 /** Settle the microtask queue so the plugin's async reconciliation finishes. */
 const settle = () => new Promise(resolve => { setTimeout(resolve, 0) })
+
+/**
+ * A gate a test opens by hand.
+ *
+ * A plugin's startup is asynchronous in Cordis, so "the fiber exists but has not
+ * started" is a real, reachable state. Holding it open is what makes that state
+ * observable in a test instead of a race against the microtask queue.
+ */
+function makeGate() {
+  let open
+  const promise = new Promise(resolve => { open = resolve })
+  return { promise, open: () => open() }
+}
 
 /**
  * Drive the settings watcher, which is what re-decides grants and delegation
@@ -936,7 +1018,9 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
 // A changed provider/model drops the inherited effort, so the adapter applies
 // its own route default — often `high`, which a cheap pool then pays for.
 {
-  const stubs = await mount()
+  const stubs = await mount(undefined, undefined, {
+    resolved: { 'google/gemini-3.7-flash': { efforts: ['low', 'medium', 'high'] } },
+  })
   enable(stubs, {
     tasks: [{ id: 'modelling', name: '3D', description: '三维', enabled: true, keywords: ['建模'],
       reasoningEffort: 'low',
@@ -955,6 +1039,87 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
   check('without one, a route change drops the inherited effort too',
     inherited.reasoningEffort, undefined)
 }
+// 14b. A DECLARED effort is placed on the routed model's own ladder.
+//
+// DSH validates the request against the model and REFUSES to clamp ("no clamping
+// or aliasing is performed"): a level the model does not list is a hard
+// UNSUPPORTED_REASONING_EFFORT before the first token. So the plugin has to
+// translate the operator's declaration — downward, because the reason to declare
+// one is cost — and must not invent a level when the build cannot tell what the
+// model accepts.
+{
+  const task = effort => ({
+    id: 'modelling', name: '3D', description: '三维', enabled: true, keywords: ['建模'],
+    ...effort === undefined ? {} : { reasoningEffort: effort },
+    pool: [{ provider: 'google', model: 'gemini-3.7-flash', weight: 1 }],
+  })
+  const drive = (stubs, turn = 1) =>
+    request(stubs.listeners, { session: session({ messages: [['user', '建模']] }) }, turn)
+  const ROUTE = 'google/gemini-3.7-flash'
+
+  const exact = await mount(undefined, undefined, { resolved: { [ROUTE]: { efforts: ['low', 'medium', 'high', 'max'] } } })
+  enable(exact, { tasks: [task('max')] })
+  check('a level the model lists is sent unchanged', (await drive(exact)).reasoningEffort, 'max')
+
+  const down = await mount(undefined, undefined, { resolved: { [ROUTE]: { efforts: ['low', 'medium'] } } })
+  enable(down, { tasks: [task('max')] })
+  check('a missing level moves DOWN to the nearest the model has',
+    (await drive(down)).reasoningEffort, 'medium')
+
+  const floor = await mount(undefined, undefined, {
+    resolved: { [ROUTE]: { efforts: ['high', 'max'], defaultEffort: 'max' } },
+  })
+  enable(floor, { tasks: [task('off')] })
+  check('a request below the model floor takes that floor, not the model default',
+    (await drive(floor)).reasoningEffort, 'high')
+
+  // The live failure this exists for: a model with no reasoning support at all.
+  const silent = await mount(undefined, undefined, { resolved: { [ROUTE]: { noReasoning: true } } })
+  enable(silent, { tasks: [task('max')] })
+  check('a model without reasoning support gets no effort key', (await drive(silent)).reasoningEffort, undefined)
+  check('and the routed model is still applied', (await drive(silent, 2)).provider, 'google')
+
+  // An id this build cannot rank is never sent blind.
+  const unranked = await mount(undefined, undefined, { resolved: { [ROUTE]: { efforts: ['low', 'high'] } } })
+  enable(unranked, { tasks: [task('minimal')] })
+  check('an unrankable declared level takes the weakest the model lists',
+    (await drive(unranked)).reasoningEffort, 'low')
+
+  // A lookup that cannot answer is NOT an answer: the declaration stands as
+  // written, and the adapter reports a genuine mismatch instead of the plugin
+  // quietly ignoring what it was told.
+  const failed = await mount(undefined, undefined, { resolved: { [ROUTE]: { throws: 'catalog unavailable' } } })
+  enable(failed, { tasks: [task('max')] })
+  check('a failed lookup keeps the declared level', (await drive(failed)).reasoningEffort, 'max')
+  check('and the failure is recorded rather than swallowed',
+    (await failed.handlers.get('health')()).errors.some(entry => entry.where === 'reasoning effort lookup'), true)
+  await drive(failed, 2)
+  check('a failed lookup is not retried per request', failed.llm.modelInfoCalls.length, 1)
+
+  // The lookup is async and reaches the adapter, so it happens once per route.
+  const cached = await mount(undefined, undefined, { resolved: { [ROUTE]: { efforts: ['low', 'medium'] } } })
+  enable(cached, { tasks: [task('max')] })
+  await drive(cached, 1)
+  await drive(cached, 2)
+  check('the model is resolved once per route, not once per request',
+    cached.llm.modelInfoCalls, [ROUTE])
+
+  // A route the model cannot be resolved for at all (no metadata) is the same
+  // answer as "no reasoning": the key is dropped rather than sent blind.
+  const unknown = await mount(undefined, undefined, { resolved: {} })
+  enable(unknown, { tasks: [task('max')] })
+  check('an unresolvable model drops the key instead of guessing',
+    (await drive(unknown)).reasoningEffort, undefined)
+
+  // The capability being ABSENT is not an answer at all — an `llm` that cannot
+  // resolve models must not be read as "no model supports reasoning".
+  const blind = await mount(undefined, undefined, { noResolver: true })
+  enable(blind, { tasks: [task('max')] })
+  check('a build that cannot resolve models honours the declaration',
+    (await drive(blind)).reasoningEffort, 'max')
+  check('and records nothing for it', blind.llm.modelInfoCalls.length, 0)
+}
+
 // 15. Settings changes invalidate cached decisions.
 {
   const stubs = await mount()
@@ -1005,6 +1170,150 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
   check('and the built-in is visible again',
     agent.registered.get('subagent').description, 'built-in subagent')
   check('and every mask it installed is lifted', agent.restrictions, [])
+}
+
+// 18-1. A fiber is OWNED from the instant it exists, not from the instant its
+//      startup runs.
+//
+// Cordis starts a plugin asynchronously, so `ctx.plugin()` hands back a fiber
+// whose body has not run yet. An earlier version returned `built ? fiber :
+// undefined` and therefore threw the fiber away — in a live session that meant
+// health said `installed: 0, owned: false` while the delegation tool was in fact
+// registered in the agent's scope, with no handle left to revoke it. Both facts
+// are asserted here, and separately: ownership is unconditional, and `applied`
+// is what says whether the startup has run.
+{
+  const gate = makeGate()
+  const agent = fakeAgent({ preset: 'diy-smart', startupGate: gate })
+  const stubs = await mount(undefined, undefined, { agents: [agent] })
+  enable(stubs, { preset: 'diy-smart' })
+  await mountSync(stubs)
+
+  const pending = await stubs.handlers.get('health')()
+  check('a granted agent is owned while its startup is still pending',
+    pending.delegation.installed, 1)
+  check('and the agent record says so', pending.delegation.agents[0].owned, true)
+  check('with the startup marked as not yet run', pending.delegation.applied, 0)
+  check('so nothing is registered in that scope yet', agent.owns.size, 0)
+  check('and the built-in is still the visible delegation tool',
+    agent.registered.get('subagent').description, 'built-in subagent')
+  check('the service the install needs was found there',
+    pending.delegation.service, true)
+
+  gate.open()
+  await settle()
+  const started = await stubs.handlers.get('health')()
+  check('once the startup runs, it is applied', started.delegation.applied, 1)
+  check('the tool becomes visible', 
+    agent.registered.get('subagent').description.includes('Delegate ONE closed task'), true)
+  check('and it is still exactly one installation', started.delegation.installed, 1)
+
+  // The disposer survived the wait: revoking still tears the installation down.
+  stubs.settings.value().presets = {}
+  await mountSync(stubs)
+  check('and revocation still removes a startup that arrived late', agent.owns.size, 0)
+}
+
+// 18-2. A startup that FAILS is recorded, is not swallowed, and leaves nothing
+//      half-installed.
+//
+// The throw happens after `ctx.plugin()` has returned, so the caller's `try`
+// cannot see it. It is recorded where the page and the health read can reach it,
+// and the teardown runs before the rethrow, so a refused registration never
+// leaves a tool table that is half this plugin's.
+{
+  const agent = fakeAgent({
+    preset: 'diy-smart',
+    failRegister: tool => tool.name === 'subagent',
+  })
+  const stubs = await mount(undefined, undefined, { agents: [agent] })
+  enable(stubs, { preset: 'diy-smart' })
+  await mountSync(stubs)
+  await settle()
+
+  const health = await stubs.handlers.get('health')()
+  check('a deferred startup failure is recorded where it can be read',
+    health.errors.some(entry => entry.where === 'delegation startup'), true)
+  check('and not as a failure of the caller',
+    health.errors.some(entry => entry.where === 'install delegation tool'), false)
+  check('the agent record carries the reason',
+    typeof health.delegation.agents[0].error === 'string'
+      && health.delegation.agents[0].error.includes('refused to register'), true)
+  check('the failed startup is not reported as applied',
+    health.delegation.agents[0].applied, false)
+  check('and it left the tool table untouched', agent.owns.size, 0)
+  check('and installed no mask behind it', agent.restrictions, [])
+  check('so the built-in delegation path is intact',
+    agent.registered.get('subagent').description, 'built-in subagent')
+}
+
+// 18-3. With no delegation service in scope, nothing is installed AND health says
+//      why.
+//
+// This is the second, independent reason `installed` can be 0: no fiber is ever
+// created, so no startup can be pending. Naming the missing service is what
+// separates it from a broken install.
+{
+  const agent = fakeAgent({ preset: 'diy-smart' })
+  const stubs = await mount(undefined, undefined, { agents: [agent], subagents: null })
+  enable(stubs, { preset: 'diy-smart' })
+  await mountSync(stubs)
+
+  const health = await stubs.handlers.get('health')()
+  check('without the service nothing is installed', health.delegation.installed, 0)
+  check('and the agent is not claimed', health.delegation.agents[0].owned, false)
+  check('health names the missing service as the reason', health.delegation.service, false)
+  check('nothing was registered in that scope', agent.owns.size, 0)
+  check('and no failure is invented for it', health.errors, [])
+}
+
+// 18-4. A failed CHILD startup lifts its own masks before it gives up.
+//
+// The child-side install masks the delegation tools FIRST and registers the
+// persona LAST, so a failure in between is the case that matters: the child must
+// not be left with masks and no persona, which would silently deny it tools for
+// a profile that was never applied.
+{
+  const parent = fakeAgent({ preset: 'diy-smart' })
+  const subagents = makeSubagents()
+  const stubs = await mount(undefined, undefined, { agents: [parent], subagents })
+  enable(stubs, {
+    preset: 'diy-smart',
+    tasks: [
+      { id: 'modelling', name: '3D', description: '三维', enabled: true, keywords: ['建模'],
+        childPersona: 'You are a CAD executor.',
+        pool: [{ provider: 'google', model: 'gemini-3.7-flash', weight: 1 }] },
+      { id: 'general', name: '通用', description: '日常', enabled: true,
+        pool: [{ provider: 'b-ai', model: 'qwen3.8-flash', weight: 1 }] },
+    ],
+  })
+  await mountSync(stubs)
+
+  const children = []
+  subagents.onCreate = (parentAgent) => {
+    const child = fakeAgent({
+      preset: 'diy-smart',
+      origin: 'subagent',
+      id: `c${children.length + 1}`,
+      parent: parentAgent.session.id,
+      builtins: [...parentAgent.registered.keys()],
+      failSection: true,
+    })
+    children.push(child)
+    stubs.listeners.get('agent/created')({ agent: child })
+  }
+
+  await parent.registered.get('subagent').execute(
+    { description: 'part', prompt: 'Build part A.', task: 'modelling' },
+    { agent: parent, signal: new AbortController().signal },
+  )
+  const child = children[0]
+  const health = await stubs.handlers.get('health')()
+  check('a failed child startup is recorded too',
+    health.errors.some(entry => entry.where === 'child rules startup'), true)
+  check('the failed child install leaves no masks behind', child.restrictions, [])
+  check('and no persona it could not apply', child.sections, [])
+  check('the child keeps its inherited tool table', child.owns.size, 0)
 }
 
 // 18b. A child never receives the tool: the graph stays one level deep by

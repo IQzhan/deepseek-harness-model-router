@@ -187,14 +187,9 @@ function canonicalJson(value) {
 }
 
 /**
- * A small stable revision for a folder signature.
+ * A small stable revision for a string.
  *
- * The settings service gave the page a revision to fence its writes with; files
- * have no such counter, so one is derived from the signature the watcher already
- * computes. It only has to change when the content changes — which is exactly
- * what the signature does.
- *
- * @param signature - the folder signature.
+ * @param signature - the text to hash.
  * @returns a non-negative integer.
  */
 function revisionOf(signature) {
@@ -203,6 +198,45 @@ function revisionOf(signature) {
     hash = (hash * 31 + signature.charCodeAt(index)) % 2147483647
   }
   return hash
+}
+
+/**
+ * Deterministic JSON: object keys sorted, so two equal documents hash alike.
+ *
+ * @param value - any JSON-shaped value.
+ * @returns its canonical text.
+ */
+function stableString(value) {
+  if (Array.isArray(value)) return `[${value.map(stableString).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    const keys = Object.keys(value).sort()
+    return `{${keys.map(key => `${JSON.stringify(key)}:${stableString(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value) ?? 'null'
+}
+
+/**
+ * The revision of a configuration DOCUMENT, which is what the page fences on.
+ *
+ * The settings service gave the page a revision to fence its writes with; files
+ * have no such counter, so one is derived here. It is derived from the CONTENT,
+ * not from the folder signature the watcher uses: a signature carries size and
+ * mtime, so touching a file, restoring it byte-for-byte, or letting any other
+ * tool rewrite identical bytes all moved the revision — and the page then
+ * refused a perfectly good draft with "配置已被其他来源修改" for a configuration
+ * that had not changed at all. (Measured: the offline suite's own hand-edit case
+ * moved the deployed revision while leaving every file identical.)
+ *
+ * Problems ride along, because a file that stopped parsing IS a configuration
+ * change from the operator's point of view even when the last good values are
+ * still in effect.
+ *
+ * @param document - the effective configuration.
+ * @param problems - the parse problems attached to it.
+ * @returns a non-negative integer that changes exactly when the content does.
+ */
+function revisionOfDocument(document, problems) {
+  return revisionOf(`${stableString(document)}\u0000${stableString(problems ?? [])}`)
 }
 
 /**
@@ -1169,10 +1203,11 @@ function mountRouter(ctx) {
   const readDocument = () => {
     if (store === undefined) return { document: document(), problems: [], revision: 0 }
     reload()
+    const problems = cached?.problems ?? []
     return {
       document: document(),
-      problems: cached?.problems ?? [],
-      revision: revisionOf(cachedSignature),
+      problems,
+      revision: revisionOfDocument(document(), problems),
     }
   }
 
@@ -1186,7 +1221,7 @@ function mountRouter(ctx) {
         .catch(error => ({ ok: false, problems: [String(error?.message ?? error)] }))
     }
     reload()
-    const current = revisionOf(cachedSignature)
+    const current = revisionOfDocument(document(), cached?.problems ?? [])
     if (Number.isFinite(expectedRevision) && expectedRevision !== current) {
       // Another writer (or a hand-edit) moved the configuration after this page
       // read it. Refusing is the whole point of the fence: silently overwriting
@@ -1203,7 +1238,7 @@ function mountRouter(ctx) {
     cached = store.read()
     cachedSignature = store.signature()
     onConfigChange()
-    return { ok: true, problems: [], revision: revisionOf(cachedSignature) }
+    return { ok: true, problems: [], revision: revisionOfDocument(document(), cached?.problems ?? []) }
   }
 
   /** Everything a configuration change invalidates, in one place. */
@@ -1390,6 +1425,102 @@ function mountRouter(ctx) {
     return pick(settled, session, turn)
   }
 
+  /**
+   * Reasoning levels, strongest first.
+   *
+   * The vocabulary is the adapter's, so this is only a RANKING: an id the target
+   * model does not list is never sent, and an id this table cannot rank is never
+   * guessed at.
+   */
+  const EFFORT_LADDER = ['max', 'high', 'medium', 'low', 'off']
+
+  /**
+   * What each routed model can actually take, cached per route.
+   *
+   * `llm.resolveModelInfo` is ASYNC and reaches the adapter, so the answer is
+   * cached: it is a property of one (provider, model) pair, and a routing
+   * decision must stay cheap enough to run once per request. `undefined` means
+   * "this build could not tell" — the caller then honours the declared value
+   * rather than inventing one.
+   *
+   * @type {Map<string, {ids: string[]} | undefined>}
+   */
+  const effortSupport = new Map()
+
+  /** The reasoning levels one route supports, or undefined when unknowable. */
+  async function effortSupportOf(provider, model, signal) {
+    const key = `${provider}/${model}`
+    if (effortSupport.has(key)) return effortSupport.get(key)
+    const llm = ctx.get('llm')
+    if (typeof llm?.resolveModelInfo !== 'function') return undefined
+    let support
+    try {
+      const info = await llm.resolveModelInfo(provider, model, signal)
+      // An ABSENT `reasoning` block means the model takes no effort at all, and
+      // that is an answer — the one that used to kill a child mid-turn.
+      const efforts = info?.reasoning?.efforts
+      support = {
+        ids: Array.isArray(efforts)
+          ? efforts.map(effort => effort?.id).filter(id => typeof id === 'string' && id.length > 0)
+          : [],
+      }
+    } catch (error) {
+      // An aborted lookup says nothing about the model, so it is not cached.
+      if (signal?.aborted === true) return undefined
+      diagnostics.fail('reasoning effort lookup', error)
+      console.error(`${ROUTER_NAME}: could not resolve the reasoning levels of ${key}`)
+      support = undefined
+    }
+    // Bounded: a long-lived process must not grow one entry per model ever seen.
+    if (effortSupport.size > 64) effortSupport.clear()
+    effortSupport.set(key, support)
+    return support
+  }
+
+  /**
+   * The effort to send a routed model, from the one the operator declared.
+   *
+   * DSH validates the request against the model and REFUSES to clamp — "no
+   * clamping or aliasing is performed", a mismatch is a hard
+   * `UNSUPPORTED_REASONING_EFFORT` before the first token. So a task that
+   * declares `low` for a cheap pool has exactly three possible fates, and only
+   * one of them is right:
+   *
+   *   · sent as declared, and the turn dies      ← a model without that level
+   *   · silently dropped, running at the model's own default, often `high`
+   *                                              ← what a route change used to do
+   *   · moved to the nearest level it CAN take   ← this
+   *
+   * The walk goes DOWN from the requested level, because the reason to declare
+   * one is cost: asking for less reasoning than the operator wanted is a
+   * rounding error, asking for more is the bill they were avoiding. When the
+   * model's floor is above the request, the weakest level it has is still the
+   * closest honest reading — and beats dropping the key, which would hand the
+   * decision to the adapter's default.
+   *
+   * @param requested - the task's declared effort.
+   * @param support - what the model accepts, or undefined when unknowable.
+   * @returns the level to send, or undefined to leave the key off entirely.
+   */
+  function resolveEffort(requested, support) {
+    // Unknowable (an `llm` that cannot resolve models, or a lookup that failed):
+    // an explicit instruction from the operator is honoured as written. The
+    // adapter reports a genuine mismatch, which is visible, rather than this
+    // plugin quietly ignoring what it was told.
+    if (support === undefined) return requested
+    const ids = support.ids
+    if (ids.length === 0) return undefined
+    if (ids.includes(requested)) return requested
+    const from = EFFORT_LADDER.indexOf(requested)
+    if (from !== -1) {
+      for (let at = from + 1; at < EFFORT_LADDER.length; at += 1) {
+        if (ids.includes(EFFORT_LADDER[at])) return EFFORT_LADDER[at]
+      }
+    }
+    const ranked = EFFORT_LADDER.filter(level => ids.includes(level))
+    return ranked[ranked.length - 1] ?? undefined
+  }
+
   ctx.on('agent/request', async (payload, next) => {
     const base = await next()
     const session = payload?.agent?.session
@@ -1405,22 +1536,26 @@ function mountRouter(ctx) {
     }
     if (target === undefined) return base
     const same = target.provider === base.provider && target.model === base.model
-    const effort = target.reasoningEffort
-    if (same && (effort === undefined || effort === base.reasoningEffort)) return base
+    const declared = target.reasoningEffort
+    if (same && (declared === undefined || declared === base.reasoningEffort)) return base
     const routed = {
       ...base,
       ...same ? {} : { provider: target.provider, model: target.model },
     }
-    if (effort === undefined) {
+    if (declared === undefined) {
       // A route CHANGE must drop the inherited effort. Keeping it means asking
       // the new model for a reasoning mode it may not have — measured live: a
       // child died with `provider "b-ai" model "mimo-v2.5" does not support
       // reasoning` before producing a single token. Without the key the adapter
       // applies the model's own default, the only value that can be right.
       if (!same) delete routed.reasoningEffort
-    } else {
-      routed.reasoningEffort = effort
+      return routed
     }
+    // A DECLARED effort is an instruction, so it is preserved wherever the target
+    // can honour it and moved to the nearest level it can when it cannot.
+    const effort = resolveEffort(declared, await effortSupportOf(target.provider, target.model, payload.signal))
+    if (effort === undefined) delete routed.reasoningEffort
+    else routed.reasoningEffort = effort
     return routed
   })
 
@@ -1505,6 +1640,32 @@ function mountRouter(ctx) {
   /** agent -> the fiber that owns its delegation tool. */
   const delegationFibers = new Map()
 
+  /**
+   * Per-installation state, keyed by the fiber that owns the installation.
+   *
+   * Cordis DEFERS a plugin's startup: `agent.ctx.plugin(...)` returns a fiber
+   * whose `apply` has not run yet, and the docs state the startup body may even
+   * return a promise. A synchronous "did apply run?" flag is therefore ALWAYS
+   * false at that moment, and gating the returned fiber on it discards a LIVE
+   * installation: the tool stays registered in that agent's scope, nothing can
+   * ever revoke it, and health reports `installed: 0` beside a working
+   * delegation tool. Both halves of that were observed in a real session — the
+   * tool's own description (generated from the config's task list) was in the
+   * agent's tool list while health still said `installed: 0, owned: false`.
+   *
+   * So the fiber is tracked EAGERLY, and `applied` distinguishes the two
+   * remaining failure modes: a fiber whose startup never ran (a service that
+   * never became available in that scope) from one that ran and is live.
+   *
+   * @type {WeakMap<object, {kind: string, applied: boolean, error: string|undefined}>}
+   */
+  const installStates = new WeakMap()
+
+  /** The state record of one installation, or undefined when it is untracked. */
+  function installStateOf(fiber) {
+    return installStates.get(fiber)
+  }
+
   /** The preset an agent runs under, from its live scope chain when possible. */
   function presetIdOf(agent) {
     const roster = ctx.get('agentPresets')
@@ -1574,10 +1735,9 @@ function mountRouter(ctx) {
 
   /** Install the delegation tool and mask the built-ins for one agent. */
   function installDelegation(agent) {
-    const config = document()
     const subagents = ctx.get('subagents')
-    if (subagents === undefined || typeof subagents.start !== 'function') return undefined
-    let built = false
+    if (subagents === undefined || subagents === null || typeof subagents.start !== 'function') return undefined
+    const state = { kind: 'delegation', applied: false, error: undefined }
     // A bridge plugin is required: only a context that DECLARES `tools` may
     // register into it or restrict it, and the fiber it returns owns every one
     // of those registrations — so one dispose removes the tool and lifts the
@@ -1587,6 +1747,14 @@ function mountRouter(ctx) {
       inject: ['tools'],
       apply(toolCtx) {
         const disposers = []
+        /** Release everything registered so far, in reverse order. */
+        const teardown = () => {
+          for (const dispose of disposers.splice(0).reverse()) {
+            try {
+              dispose()
+            } catch { /* already gone */ }
+          }
+        }
         try {
           const live = document()
           const continuable = typeof subagents.startContinuable === 'function'
@@ -1613,7 +1781,7 @@ function mountRouter(ctx) {
               subagents,
             })))
           }
-          built = true
+          state.applied = true
           // Mask every built-in delegation tool this scope inherits. `restrict`
           // REJECTS unknown names outright, so an absent tool is simply a
           // rejected restriction that means "nothing to mask".
@@ -1624,13 +1792,22 @@ function mountRouter(ctx) {
             } catch { /* absent from this scope's chain: nothing to mask */ }
           }
         } catch (error) {
-          for (const dispose of disposers.reverse()) dispose()
+          teardown()
+          state.error = error instanceof Error ? error.message : String(error)
+          // Recorded HERE, not only at the call site: startup runs after
+          // `ctx.plugin()` has already returned, so the caller's `try` cannot see
+          // this throw — a deferred failure would otherwise reach a console that
+          // neither the settings page nor the health read can read.
+           diagnostics.fail('delegation startup', error)
           throw error
         }
-        return () => { for (const dispose of disposers.reverse()) dispose() }
+        return teardown
       },
     })
-    return built ? fiber : undefined
+    // Tracked EAGERLY. `apply` has NOT run yet at this point — see
+    // `installStates` for why gating the fiber on it loses a live tool.
+    installStates.set(fiber, state)
+    return fiber
   }
 
   /**
@@ -1661,12 +1838,20 @@ function mountRouter(ctx) {
       : ''
     const maskDelegation = live.childDelegation !== true
     if (!maskDelegation && persona === '') return undefined
-    let built = false
+    const state = { kind: 'child', applied: false, error: undefined }
     const fiber = agent.ctx.plugin({
       name: `${ROUTER_NAME}:child`,
       inject: ['tools'],
       apply(childCtx) {
         const disposers = []
+        /** Release everything registered so far, in reverse order. */
+        const teardown = () => {
+          for (const dispose of disposers.splice(0).reverse()) {
+            try {
+              dispose()
+            } catch { /* already gone */ }
+          }
+        }
         try {
           if (maskDelegation) {
             // One deduplicated pass: the plugin's own names and the built-in
@@ -1690,15 +1875,20 @@ function mountRouter(ctx) {
               complete: true,
             }))
           }
-          built = true
+          state.applied = true
         } catch (error) {
-          for (const dispose of disposers.reverse()) dispose()
+          teardown()
+          state.error = error instanceof Error ? error.message : String(error)
+          // Recorded HERE for the same reason as the delegation install: startup
+          // is deferred, so the caller cannot catch this.
+           diagnostics.fail('child rules startup', error)
           throw error
         }
-        return () => { for (const dispose of disposers.reverse()) dispose() }
+        return teardown
       },
     })
-    return built ? fiber : undefined
+    installStates.set(fiber, state)
+    return fiber
   }
 
   /** Forget one agent's delegation tool, e.g. when its session ends. */
@@ -1850,6 +2040,19 @@ function mountRouter(ctx) {
       tool: DELEGATION_TOOL,
       provider: DELEGATION_PROVIDER,
       installed: delegationFibers.size,
+      // How many of those fibers have RUN their startup body. `installed` counts
+      // fibers that exist; Cordis starts a plugin asynchronously, so a fiber can
+      // exist for a moment — or forever, when a service never becomes available
+      // in that scope — without having registered anything. That distinction is
+      // the difference between "the takeover is live" and "the built-in tool is
+      // still the one being called", which a bare `installed` cannot express.
+      applied: [...delegationFibers.values()]
+        .filter(fiber => installStateOf(fiber)?.applied === true).length,
+      // Whether the service this plugin starts children through is visible in
+      // the plugin's OWN scope. When it is not, no installation is attempted at
+      // all — the second, independent reason `installed` can be 0, and the one
+      // that has nothing to do with the fiber lifecycle above.
+      service: typeof ctx.get('subagents')?.start === 'function',
       childDelegation: document().childDelegation === true,
       // WHY it is or is not installed, per live agent. A bare `installed: 0`
       // cannot be told apart from "no session is open", which is the first
@@ -1861,12 +2064,17 @@ function mountRouter(ctx) {
           const live = typeof agents?.list === 'function' ? agents.list() : []
           return live.slice(0, 10).map((agent) => {
             const preset = presetIdOf(agent) ?? null
+            const fiber = delegationFibers.get(agent)
+            const state = fiber === undefined ? undefined : installStateOf(fiber)
             return {
               id: String(agent.session?.id ?? ''),
               preset,
               origin: agent.session?.header?.origin ?? 'main',
               granted: preset !== null && config.presets?.[preset] !== undefined,
-              owned: delegationFibers.has(agent),
+              owned: fiber !== undefined,
+              kind: state?.kind ?? null,
+              applied: state?.applied === true,
+              error: state?.error ?? null,
             }
           })
         } catch (error) {

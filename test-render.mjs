@@ -509,7 +509,7 @@ function render(label, ...args) {
     error: '',
     health: {
       routing: { enabled: true, tasks: 3 },
-      delegation: { installed: 2, tool: 'subagent', provider: 'spawn' },
+      delegation: { installed: 2, applied: 2, tool: 'subagent', provider: 'spawn' },
       capabilities: { agents: true, subagents: true, webServer: false },
       breaker: { tripped: false },
       errors: [],
@@ -517,10 +517,45 @@ function render(label, ...args) {
     },
   })
   check('a healthy report is summarised', healthy.summary,
-    'Host 半边在线 · 路由已启用 · 3 个任务 · 委派工具已挂载 2 个会话')
+    'Host 半边在线 · 路由已启用 · 3 个任务 · 委派工具已生效 2 / 已挂载 2 个会话')
   check('a missing capability is named', healthy.missing, ['webServer'])
   check('and marks the card bad', healthy.bad, true)
   check('with no breaker line', healthy.breaker, '')
+
+  // A fiber is tracked before Cordis starts it, so the two counts can differ.
+  // Showing the pair is the difference between "the takeover is absent" and
+  // "its startup never ran" — a live defect that reported `installed: 0` beside
+  // a working delegation tool.
+  const pending = healthView({
+    status: 200,
+    error: '',
+    health: {
+      routing: { enabled: true, tasks: 1 },
+      delegation: { installed: 3, applied: 1, service: true },
+      capabilities: { agents: true, subagents: true },
+      breaker: { tripped: false },
+      errors: [],
+      providers: {},
+    },
+  })
+  check('a pending startup is visible as the pair', pending.summary.includes('已生效 1 / 已挂载 3'), true)
+
+  // A host half from before the pair existed reports only `installed`; the page
+  // must not turn that into a misleading zero.
+  const legacy = healthView({
+    status: 200,
+    error: '',
+    health: {
+      routing: { enabled: true, tasks: 1 },
+      delegation: { installed: 2 },
+      capabilities: { agents: true },
+      breaker: { tripped: false },
+      errors: [],
+      providers: {},
+    },
+  })
+  check('an older host half falls back to the installed count',
+    legacy.summary.includes('已生效 2 / 已挂载 2'), true)
 
   const tripped = healthView({
     status: 200,

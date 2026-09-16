@@ -969,6 +969,14 @@ function healthView(state) {
     }
   }
   const breaker = health.breaker ?? {}
+  // A fiber is tracked the moment it exists, but Cordis starts a plugin
+  // asynchronously: `applied` is how many have actually RUN their startup. The
+  // two numbers differ only while an install is pending or stuck, and showing
+  // the pair is what turns "已挂载 0" from a mystery into a diagnosis. An older
+  // host reports no `applied` at all, so it falls back to the installed count
+  // rather than displaying a misleading zero.
+  const installed = health.delegation?.installed ?? 0
+  const applied = typeof health.delegation?.applied === 'number' ? health.delegation.applied : installed
   const missing = Object.entries(health.capabilities ?? {})
     .filter(([, present]) => present !== true)
     .map(([name]) => name)
@@ -980,7 +988,7 @@ function healthView(state) {
     bad: breaker.tripped === true || missing.length > 0,
     summary: `Host 半边在线 · 路由${health.routing?.enabled === true ? '已启用' : '未启用'}`
       + ` · ${health.routing?.tasks ?? 0} 个任务`
-      + ` · 委派工具已挂载 ${health.delegation?.installed ?? 0} 个会话`,
+      + ` · 委派工具已生效 ${applied} / 已挂载 ${installed} 个会话`,
     breaker: breaker.tripped === true
       ? `本插件已自动停用（连续失败 ${breaker.consecutive ?? 0} 次，阈值 ${breaker.threshold ?? 0}）：`
         + `${breaker.reason ?? ''}。约 60 秒后自动重试；改动任意设置可立即重置。`

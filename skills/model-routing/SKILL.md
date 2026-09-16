@@ -49,7 +49,7 @@ $DSH_HOME/model-routing/
 | `enabled` | bool | 关掉即该任务不参与路由 |
 | `keywords` | string[] | 命中即**直接路由**，不必等分类器（省一次调用、100% 确定） |
 | `pool` | array | 模型池：`{ provider, model, weight }`。按权重**全局**轮转，不区分会话 |
-| `reasoningEffort` | string? | 可选：`off`/`low`/`medium`/`high`。覆盖路由默认的推理强度 |
+| `reasoningEffort` | string? | 可选：`off`/`low`/`medium`/`high`/`max`。覆盖路由默认的推理强度；模型没有这一档时**就近向下**取（见下） |
 | `childPersona` | string? | 可选：本任务的子智能体读这一段系统提示词（**整体替换**继承来的那段） |
 | `childTools` | object? | 可选：`{ allow: [...] }` 或 `{ deny: [...] }`，限定子智能体可用工具 |
 
@@ -63,6 +63,11 @@ $DSH_HOME/model-routing/
 
 池里的模型按权重全局轮转；**一轮内钉住同一个模型**。失败时：池里换下一个 → 整池失败则改用默认任务 →
 默认任务也失败则**不再改写路由**，把这一轮交回调用方自己继续。
+
+**推理强度怎么落地**：任务写了 `reasoningEffort` 而池里模型没有那一档时，插件会**就近向下**取
+（`max → high → medium → low → off`），而不是丢掉你的设置、也不是让请求失败；模型完全不支持推理时
+才不发这个字段。所以：给便宜池写 `low` 是有效的省钱手段，写 `max` 也不会把会话打死（会被降到最近的
+可用档）。
 
 ## 3. 怎么改
 
@@ -99,6 +104,15 @@ $DSH_HOME/model-routing/
 
 - 页面「任务路由 → 运行状态」会显示配置来源（`files` + 目录路径）、能力探测、最近 Host 错误、
   以及插件是否已**自动停用**。先看那里。
+- **"接管是否真的生效"要看三个数**（页面摘要里是「委派工具已生效 N / 已挂载 M 个会话」，
+  也可以直接读 `GET /api/dsh-model-router/health` 的 `delegation`）：
+  `installed`（登记了几个 fiber）、`applied`（其中启动真的跑过的）、`service`（委派服务在不在
+  插件作用域里）。**只有 `installed == applied` 且 `service: true` 才代表接管在生效**；
+  `applied < installed` 或某个 agent 的 `error` 非空，就是启动失败——原因会同时进 `errors[]`
+  （`where` 为 `delegation startup` 或 `child rules startup`）。
+- 不想记命令就跑仓库里的 `pwsh -File verify-live.ps1`：读一次健康面，逐条判 PASS/FAIL。
 - 手工编辑出错不会让插件崩：解析失败的那个文件会被报告，其余文件照常加载（该文件保留上一次的好值）。
 - 想彻底停掉：`global.yml` 里 `enabled: false`，或给 profile 里 `dsh-model-router` 那一行加
   `disabled: true` 后重启。**这两种都不会动预设文件。**
+- **改了 Host 半边的代码必须重启 `dsh web`**：profile 的 live reload 只重读配置（`root: []`，
+  不做模块重载），所以不重启就还是在跑旧代码。

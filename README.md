@@ -78,6 +78,23 @@ node build-router.mjs     # 重建 + 重新 link 包与 skill
 
 重启 `dsh web` 即可。客户端界面随页面刷新更新，Host 半边需要重启。
 
+**重启后想知道"到底生效了没有"**，跑这一条（只读、不花 token）：
+
+```powershell
+pwsh -File verify-live.ps1          # 默认 http://127.0.0.1:3080，-Port 换端口，-Json 看原始健康面
+```
+
+它会逐条判 PASS/FAIL：Host 是否在线、路由是否启用、委派服务是否可见、
+**每个已授权会话是否真的被接管并启动了**、登记数与启动数是否相等、最近有无报错。
+离线套件证明"代码是对的"，这条命令证明"这台机器上真的在跑"——两者不是一回事。
+
+**想知道某一轮"实际跑在哪个模型上"**，读那份会话日志（插件自己的报告不算证据，日志算）：
+
+```bash
+node session-peek.mjs <会话 id> --routes     # 继承了哪条路由、开场指令、真正发出的请求头、结束原因
+node session-peek.mjs <会话 id> --types      # 这份日志里有哪些记录类型（新 schema 靠它发现，不靠猜）
+```
+
 ## 卸载
 
 1. 从 `cordis.patch.yml` 删掉上面那一行（或 `dsh plugin --profile web remove dsh-model-router`）；
@@ -147,6 +164,9 @@ $DSH_HOME/model-routing/
 | `skills/model-routing/SKILL.md` | 只能 `/` 调用的配置 skill |
 | `docs/design-notes.md` | 设计说明：为什么这么做、踩过的坑、验证方式 |
 | `build-router.mjs` | 构建 + 安装（包、yaml 依赖、skill） |
+| `verify.ps1` | 重建 + 跑全部离线套件 |
+| `verify-live.ps1` | 验收**正在运行的**部署：读健康面并逐条判 PASS/FAIL（只读、不花 token） |
+| `session-peek.mjs` | 读一份会话日志（zstd 拼接帧），用它验证"这一轮到底跑在哪个模型上" |
 
 ## 测试
 
@@ -154,16 +174,21 @@ $DSH_HOME/model-routing/
 node test-model-routing-config.mjs   # 策略核心
 node test-store.mjs                  # 配置文件（真实文件系统）
 node test-router-host.mjs            # 适配层（跑真实构建产物）
-node test-store-wiring.mjs           # 构建产物读真实配置目录、手工改文件、revision 栅栏
+node test-store-wiring.mjs           # 构建产物读真实配置目录（只读）+ 在临时副本上验证手改与 revision 栅栏
 node test-package.mjs                # 两个真实加载器 + skill 契约
 node test-render.mjs                 # 设置页（真实 React 渲染）
 node test-deployed-config.mjs        # 本机真实配置
 node test-live-nondeepseek.mjs       # 真实联网调用（不可达的 host 自动跳过）
 ```
 
-合计近 500 条断言。测试里刻意包含**敌意环境**（remote 访问抛错、配置目录有坏文件、工具名不存在、
-revision 冲突、React 不完整），这些用例抓到过多个真 bug，包括"工具清单被逐字符拆开"和
-"内联模块在加载期解构未定义的 fs 导致整个插件挂载失败"。
+合计 7 个套件、533 条断言。测试里刻意包含**敌意环境**（remote 访问抛错、配置目录有坏文件、
+工具名不存在、revision 冲突、React 不完整、**插件的启动被延迟甚至失败**、**模型不支持被声明的
+推理强度**），这些用例抓到过多个真 bug，包括"工具清单被逐字符拆开"、"内联模块在加载期解构未定义
+的 fs 导致整个插件挂载失败"，以及"接管其实在工作、健康面却报 `installed: 0`"（根因：Cordis 异步
+启动插件，拿"启动跑没跑"当登记条件就会丢掉一个活的安装；见 `docs/design-notes.md` 5.2.2(d)）。
+
+**测试绝不改写真实配置**：接线套件只**读**部署目录，所有会写入的用例（手改文件、revision 栅栏）
+都跑在同一份目录的**临时副本**上，最后一条断言就是"跑完这一套，线上 revision 没有动过"。
 
 ## 已知边界
 

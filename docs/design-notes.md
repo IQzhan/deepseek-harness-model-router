@@ -121,6 +121,30 @@ smooth WRR 输出 `a b a`——这才是"均衡"该有的样子。
 `openrouter/free` 的子会话出现过 2 次空回复重试）。给任务写 `reasoningEffort: low` 就能把它压下来；
 不写就保持现状（路由默认）。
 
+**声明了就必须落地：强度是"就近映射"的，不是照抄也不是丢弃。** DSH 会拿模型能力校验请求，
+并且**明确拒绝夹取**（`llm` 源码原话："no clamping or aliasing is performed"）：模型没有的档位
+直接抛 `UNSUPPORTED_REASONING_EFFORT`，一个 token 都不会产出（实测：b-ai 的 `qwen3.8-flash`
+遇到 `max` 当场终止子会话）。于是"给任务写了 `low`"曾经只有两种结局，而两种都不对：
+
+| 结局 | 什么时候发生 | 问题 |
+| --- | --- | --- |
+| 原样发出去 | 模型不支持这一档 | 整轮直接死掉 |
+| 悄悄丢掉 | 路由换了模型（**常态**） | 你以为在省钱，其实在付模型默认档（常常是 `high`） |
+
+现在的规则：用 `llm.resolveModelInfo()` 问一次目标模型有哪些档位（**按路由缓存**，异步、只在首次
+付出一次代价），然后
+
+1. 声明值在支持列表里 → **原样保留**（精确优先）；
+2. 不在 → 沿 `max → high → medium → low → off` **向下**找最近的（省钱是声明的动机，多要一点是
+   账单，少要一点只是四舍五入）；
+3. 连最低档都比声明高 → 取**模型自己的最低档**（比丢掉键、把决定权交给模型默认值更贴近"尽量少想"）；
+4. 不支持任何档位（`reasoning` 块缺失）→ **删掉这个键**（这正是那两起真实故障）；
+5. 问不到（老版本 `llm` 没有这个方法，或查询失败）→ **照声明原样发**，由适配器报真实的错，
+   而不是插件悄悄不听话。
+
+能力探测结果按 `provider/model` 缓存（上限 64 条，超了整体清空），所以热路径上不会每次请求都去问
+适配器。
+
 **子智能体的预设与提示词（`childPersona` / `childTools`，都可选）**
 
 子智能体**没有自己的预设**：委派路径里 `agentPresets.composeFrom(childCtx, parent.ctx)` 把子作用域
@@ -228,6 +252,11 @@ smooth WRR 输出 `a b a`——这才是"均衡"该有的样子。
 | 屏蔽内置 | 对作用域内**实际存在**的内置委派工具名调用 `restrict({deny:[…]})`；`restrict` 对未知名字会直接报错，所以逐个 try/catch 探测，不存在就等于无需屏蔽 |
 | 撤销授权 | 销毁那个 fiber 即可——工具消失、遮蔽解除、内置定义原样回来。**没有任何配置文件被改动过**，所以不存在"还原时覆盖了你后来的修改"这种风险 |
 | 子智能体不再分发 | 工具**只装给非子智能体**；此外 `maxDepth: 1`，并且工具在 `execute` 里拒绝子智能体调用（双保险） |
+
+**"撤销即还原"的成立条件是：fiber 从被创建的那一刻就被记住。** Cordis 异步启动插件，
+`ctx.plugin()` 返回时 `apply` 还没跑，所以"启动成功才登记"这种写法会把一个**已经在工作的**
+安装丢掉——工具还在、令牌还在用，却没有句柄能 dispose 它，撤授权也就撤不干净（详见 5.2.2(d)）。
+现在的规则是：fiber 先登记，`applied` 单独记录启动是否跑过；启动期抛错就地 teardown + 上报。
 
 **提示词注入走工具描述，不走提示段。** 这是被预设结构逼出来的选择：`diy-smart` 的 persona 是
 `complete: true` + `includeRuntimeContext: false`，`packages/core/system-prompt/src/index.ts:590-625`
@@ -341,7 +370,11 @@ Typert Remote 面（`remote.session.modelCatalog`、`remote.agentPresets`），�
 ```jsonc
 {
   "routing":     { "enabled": true, "tasks": 3, "defaultTaskId": "general", "stats": { … } },
-  "delegation":  { "tool": "subagent", "provider": "spawn", "installed": 2, "childDelegation": false },
+  "delegation":  { "tool": "subagent", "provider": "spawn", "installed": 2, "applied": 2,
+                   "service": true, "childDelegation": false,
+                   "agents": [ { "id": "…", "preset": "cordis", "granted": true,
+                                 "owned": true, "kind": "delegation",
+                                 "applied": true, "error": null } ] },
   "capabilities":{ "settings": true, "llm": true, "timer": true, "agents": true,
                    "subagents": true, "agentPresets": true, "webServer": true },
   "errors":      [ { "at": 1789…, "where": "agent/request", "message": "…" } ],   // 最近 12 条
@@ -349,6 +382,17 @@ Typert Remote 面（`remote.session.modelCatalog`、`remote.agentPresets`），�
   "providers":   { "b-ai": { "failures": 4, "lastAt": 1789… } }
 }
 ```
+
+**`delegation` 为什么是三个数而不是一个"装了几个"**（这是被真实故障逼出来的）：
+
+| 字段 | 含义 | 单独看它会误判成什么 |
+| --- | --- | --- |
+| `installed` | 已经登记、由本插件持有的 fiber 数（**创建即计数**，不等启动） | 0 可能是"没有会话"，也可能是"服务没找到" |
+| `applied` | 其中**启动体真的跑过**的数量 | 小于 `installed` 就是"挂了但没起来"（服务在作用域里迟迟不可用） |
+| `service` | 本插件作用域里是否看得到 `subagents.start` | false 时根本不会尝试安装，与 fiber 生命周期无关 |
+| `agents[].error` | 该 agent 那次启动抛出的原因 | 启动是**延迟**执行的，调用方 try/catch 看不到，只能记在这里 |
+
+设置页把前两个数并排显示成「委派工具已生效 N / 已挂载 M 个会话」：只有相等才代表接管真的生效。
 
 **为什么"接口没回应"本身就是诊断。** Client 半边是**独立的 bundle**：Host 半边挂载失败时，
 页面照样渲染（设置页由 Client 半边注册），于是 `404 / 连接失败 / 无 fetch` 会被显示成
@@ -447,7 +491,7 @@ package/                                    ← node build-router.mjs 生成
 
 ---
 
-## 5.2.2 只有包/profile 路径才会遇到的三个坑（已修，记在这里省得再踩）
+## 5.2.2 只有包/profile 路径才会遇到的四个坑（已修，记在这里省得再踩）
 
 **(a) 裸文件行没有 client 半边。**
 见上：行必须点名一个声明了 `dsh.client` 的**包**，否则 Host 半边挂上了，
@@ -470,6 +514,34 @@ Error: dsh: plugin tree failed to load: failed to apply loader entry dsh-model-r
 `ReferenceError: React is not defined`。改成函数包装
 （`function E(...) { return React.createElement(...) }`）即可。
 动态 client 半边同样会中招，只是之前没走到那一步。
+
+**(d) `ctx.plugin()` 返回的 fiber，`apply` 还没跑 —— 绝不能拿"apply 跑没跑"当返回值条件。**
+
+这是唯一一个**只在真实进程里出现、离线全绿也照样中**的坑，代价是"接管悄悄失效"：
+
+```js
+let built = false
+const fiber = agent.ctx.plugin({ inject: ['tools'], apply(ctx) { …; built = true } })
+return built ? fiber : undefined          // ← 永远是 undefined
+```
+
+Cordis **异步**启动插件（`fiber.md`：启动体可以是 async），所以 `ctx.plugin()` 返回时
+`apply` 尚未执行，`built` 必然是 `false`。后果不是"没装上"，而是更糟的**装上了却没被记住**：
+
+- 工具确实注册进了 agent 作用域，模型真的在用它 → 路由看起来"有时生效"；
+- 但 `delegationFibers` 里没有它 → `/health` 报 `installed: 0, owned: false`；
+- **没有任何句柄能撤销它**：撤授权、关插件、force 重建都dispose 不掉这个 fiber，
+  于是"撤销即还原"的承诺当场作废，重建还会在同一作用域叠出第二份注册。
+
+修法：fiber **一创建就登记**，另用 `applied` 记录启动是否真的跑过；启动期抛错在
+**apply 内部**上报（调用方的 try/catch 根本看不到延迟抛出的异常），并在重抛前先 teardown，
+保证"半个安装"不会残留。`/health` 现在同时给出 `installed`、`applied`、`service` 三个数，
+把三种"没接管"的原因分开：服务不在作用域里 / fiber 在但启动没跑 / 启动跑了但抛错
+（错误进 `errors[]`，`where: delegation startup`）。
+
+> 复现这件事的教训写进了测试替身：`fakeAgent` 现在**也延迟**启动（`queueMicrotask`，
+> 还可以用 `startupGate` 把启动挂在半空），于是"同步假设"在离线套件里就会红，
+> 而不是等到真实会话里变成一个查不出来的 `installed: 0`。
 
 ---
 
