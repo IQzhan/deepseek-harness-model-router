@@ -1660,13 +1660,21 @@ function mountRouter(ctx) {
     // A QUOTA belongs to the PROVIDER's plan, not to one model: the rest of that
     // provider's candidates in this pool would answer exactly the same way.
     // Measured live: a 429 quota walked a nine-model google pool one 429 at a
-    // time. A plain rate limit is NOT this case — per-model limits are real, and
-    // rotating to another model is exactly right for them.
+    // time, and a zero-balance b-ai entry reports `insufficient_user_quota` too.
+    // The provider's OTHER candidates are therefore spent as well — but the task
+    // is not: a pool mixing providers still has somewhere to go. A plain rate
+    // limit is NOT this case; per-model limits are real, and moving to another
+    // model is exactly right for them.
     const failure = payload.failure ?? {}
     const quotaSpent = /QUOTA|quota|billing/iu
       .test(`${String(failure.code ?? '')} ${String(failure.message ?? '')}`)
     if (quotaSpent) {
-      console.log(`${ROUTER_NAME}: ${failedProvider} is out of quota; this task cannot serve the turn`)
+      for (const entry of task.pool ?? []) {
+        if (String(entry.provider) === failedProvider) {
+          failed.add(`${String(entry.provider)}\u0000${String(entry.model)}`)
+        }
+      }
+      console.log(`${ROUTER_NAME}: ${failedProvider} is out of quota; skipping its other models this turn`)
     }
     remember(exhausted, `${key}\u0000${taskId}`, failed)
     const untried = (task.pool ?? []).filter(entry => !failed.has(`${entry.provider}\u0000${entry.model}`))
@@ -1683,12 +1691,11 @@ function mountRouter(ctx) {
       return decision
     }
 
-    if (!quotaSpent && untried.length > 0 && task.pool.length > 1) {
-      // Advance the rotation AND pin what it advanced to: without the pin the
-      // retry's own pick would consume the slot after it and land back on the
-      // model that just failed.
-      const next = scheduler.rotateTo(task)
-      if (next === undefined) return decision
+    if (untried.length > 0 && task.pool.length > 1) {
+      // Pin the first candidate that has NOT failed, rather than whatever the
+      // rotation would advance to: with a provider skipped, the rotation's next
+      // entry can be another model of the very provider just declared spent.
+      const next = untried[0]
       scheduler.unpin(String(session.id), payload.turn)
       scheduler.pin(String(session.id), payload.turn, task.id, next)
       routed.delete(key)
@@ -1700,7 +1707,7 @@ function mountRouter(ctx) {
       // live: a child whose first dispatch resolved to the default task was sent
       // to a different task by its retry, from the same opener. Rotating the pool
       // is the retry's job; the classification stands for the turn.
-      console.log(`${ROUTER_NAME}: rotating ${task.id} after a failed request`)
+      console.log(`${ROUTER_NAME}: retrying ${task.id} on ${next.provider}/${next.model} after a failed request`)
       return { kind: 'retry' }
     }
 

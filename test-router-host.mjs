@@ -900,7 +900,7 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
     async () => undefined,
   )
   check('a failed request asks for a retry', decision, { kind: 'retry' })
-  check('the rotation is logged', stubs.logs.some(line => line.includes('rotating modelling')), true)
+  check('the rotation is logged', stubs.logs.some(line => line.includes('retrying modelling')), true)
 }
 
 // 11b. The retry rotates the pool that FAILED, not whichever pool looks busy.
@@ -934,9 +934,9 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
     async () => undefined,
   )
   check('a failed request retries', decision, { kind: 'retry' })
-  check('the retry rotates the task that failed',
-    stubs.logs.filter(line => line.startsWith('dsh-model-router: rotating')), [
-      'dsh-model-router: rotating modelling after a failed request',
+  check('the retry names the task and the candidate it moves to',
+    stubs.logs.filter(line => line.startsWith('dsh-model-router: retrying')), [
+      'dsh-model-router: retrying modelling on google/gemini-3.6-flash after a failed request',
     ])
 }
 
@@ -1042,14 +1042,14 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
   check('a quota still asks for a retry', decision, { kind: 'retry' })
   check('and says the provider is out of quota',
     stubs.logs.some(line => line.includes('out of quota')), true)
-  // The retry must not walk the rest of google's models: a quota spends the whole
-  // TASK for this turn, so the documented cascade moves the turn to the default
-  // task. (Walking the pool one 429 at a time is what the live loop was doing.)
+  // The retry must not walk the rest of google's models, and it must not abandon
+  // the task either: this pool has another PROVIDER to try. (Walking the pool one
+  // 429 at a time is what the live loop was doing.)
   const retried = await request(stubs.listeners, agent, 1)
-  check('the retry leaves the quota-spent task instead of trying its next model',
-    retried.provider, 'b-ai')
-  check('and it never picked another google model',
-    stubs.logs.some(line => line.includes('rotating modelling')), false)
+  check('the retry skips the spent provider and stays on the task',
+    retried.provider, 'dashscope')
+  check('and it never retried another model of that provider',
+    stubs.logs.some(line => line.includes('retrying modelling on google/')), false)
 
   // A model-specific failure keeps the model-by-model rotation.
   const other = await mount()
