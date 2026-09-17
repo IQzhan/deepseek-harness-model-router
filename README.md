@@ -131,7 +131,7 @@ case that writes runs against a **temporary copy** of that same directory; the l
 ran, the live revision has not moved". The temporary directory lives in the repository's `.tmp/` (it does not write
 to the system temp directory and does not touch the C: drive) and is cleaned up when the run finishes.
 
-The suites (9 suites in total, 628 assertions): policy core · configuration files (real filesystem) · adapter layer
+The suites (9 suites in total, 646 assertions): policy core · configuration files (real filesystem) · adapter layer
 (routing seam / delegation tool / health endpoint) · wiring (build artifacts read the real configuration
 directory) · package (two real loaders + skill contract) · settings page (real React rendering) ·
 **bilingual documentation sync** · **portability guard** (no absolute paths, no platform-specific constructs) ·

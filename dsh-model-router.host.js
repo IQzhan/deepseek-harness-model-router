@@ -312,6 +312,18 @@ function createConfigStore(ctx) {
      * directory read rather than a watcher that has to survive editor rename
      * dances.
      */
+    /** Whether anything has ever been SAVED into this folder. */
+    empty() {
+      const at = paths(root)
+      try {
+        if (STORE_FS.existsSync(at.global)) return false
+        return STORE_FS.readdirSync(at.tasks).filter(name => name.endsWith(FILE_EXT)).length === 0
+      } catch {
+        // No folder at all, or no tasks directory: nothing has ever been saved.
+        return true
+      }
+    },
+
     signature() {
       const at = paths(root)
       const parts = []
@@ -1225,8 +1237,25 @@ function mountRouter(ctx) {
     : migrateFromSettingsDocument(ctx, store)
   console.log(`${ROUTER_NAME}: configuration ← ${store === undefined ? 'settings.yaml' : store.root} (${migration})`)
 
+  /**
+   * The samples a FIRST install starts from.
+   *
+   * Applied to a document read from a folder where nothing has ever been saved, and
+   * nowhere else: the moment anything exists on disk the substitution never happens
+   * again, which is what keeps an upgrade from touching what the operator wrote. The
+   * samples are not WRITTEN either — they take effect, the page shows them, and the
+   * first Save is what creates the files.
+   */
+  function withSamples(next) {
+    if (store !== undefined && store.empty()) {
+      next.document = starterConfig()
+      next.starter = true
+    }
+    return next
+  }
+
   /** Cache of the file-backed document, refreshed by the watcher. */
-  let cached = store === undefined ? undefined : store.read()
+  let cached = store === undefined ? undefined : withSamples(store.read())
   let cachedSignature = store === undefined ? '' : store.signature()
 
   /** Re-read the folder; returns true when the content changed. */
@@ -1235,7 +1264,7 @@ function mountRouter(ctx) {
     const signature = store.signature()
     if (signature === cachedSignature && cached !== undefined) return false
     cachedSignature = signature
-    const next = store.read()
+    const next = withSamples(store.read())
     const changed = canonicalJson(next.document) !== canonicalJson(cached?.document)
     cached = next
     if (next.problems.length > 0) {
@@ -2353,6 +2382,10 @@ function mountRouter(ctx) {
         ...(document().tasks ?? []).map(task => `${TASKS_DIRNAME}/${task.id}${FILE_EXT}`),
       ],
       migration,
+      // True while the samples are what is in effect, i.e. nothing has been saved
+      // yet. The page and the health read can then say so instead of letting the
+      // operator believe those tasks are theirs.
+      samples: cached?.starter === true,
     },
     ...diagnostics.snapshot(),
   })

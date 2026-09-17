@@ -141,7 +141,47 @@ try {
   cleanup(sandbox)
 }
 
-// ── phase 3: the real folder is exactly where it was ────────────────────────
+// ── phase 3: a FIRST install, from an empty folder ──────────────────────────
+//
+// The samples are what an operator meets on a fresh deployment, and they must behave
+// like templates: in effect and visible, NOT written until the first save, and gone for
+// good the moment the folder holds anything — that last part is what keeps an upgrade
+// from ever rewriting what someone configured.
+const fresh = scratch('fresh-')
+try {
+  const first = await mount(join(fresh, 'settings.yaml'))
+  const born = (await first.call('GET', '/api/dsh-model-router/config')).body
+  const bornHealth = (await first.call('GET', '/api/dsh-model-router/health')).body
+  check('a first install shows the samples',
+    born?.config?.tasks?.map(task => task.id),
+    ['general', 'web-search', 'bulk', 'drawing', 'modelling'])
+  check('and says they are samples, not the operator’s own', bornHealth?.configuration?.samples, true)
+  check('with no model in any pool', born?.config?.tasks?.every(task => (task.pool ?? []).length === 0), true)
+  check('and nothing written to disk yet', existsSync(join(fresh, 'model-routing')), false)
+
+  // Saving is what creates the files — with the operator's own content.
+  const theirs = { ...born.config, enabled: true, defaultTaskId: '', tasks: [
+    { id: 'general', name: 'My general task', description: 'mine', enabled: true, keywords: [], pool: [] },
+  ] }
+  const written = (await first.call('POST', '/api/dsh-model-router/config',
+    { config: theirs, revision: born.revision })).body
+  check('the first save is accepted', written?.ok, true)
+  check('and it creates the folder', existsSync(join(fresh, 'model-routing', 'global.yml')), true)
+
+  // A later boot — the installed-process path, including an upgrade — must show the
+  // operator's document and never the samples again.
+  const second = await mount(join(fresh, 'settings.yaml'))
+  const later = (await second.call('GET', '/api/dsh-model-router/config')).body
+  const laterHealth = (await second.call('GET', '/api/dsh-model-router/health')).body
+  check('a folder with content is never given the samples back',
+    later?.config?.tasks?.map(task => task.name), ['My general task'])
+  check('and health stops calling it a sample', laterHealth?.configuration?.samples, false)
+  check('while the saved global fields survive too', later?.config?.enabled, true)
+} finally {
+  cleanup(fresh)
+}
+
+// ── phase 4: the real folder is exactly where it was ────────────────────────
 //
 // The guard for everything above: whatever the suite did, the DEPLOYMENT's own
 // revision must not have moved. That is what "the tests never touch the live

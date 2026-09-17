@@ -58,6 +58,43 @@ check('default config carries no retired flags',
   ['respectExplicitSelection', 'routeSubagents', 'search'].filter(key => key in defaultConfig()), [])
 check('starter config ships no default task', starterConfig().defaultTaskId, '')
 
+// ── the samples are templates, and templates must not mislead ───────────────
+//
+// Five generic shapes of work, written in English, with EMPTY pools: a sample that
+// shipped a model would route traffic on someone else's account the moment they turned
+// the plugin on, and a sample that named a framework would only be followed for that
+// framework. The tool scopes are checked too, because a filter naming a tool the child
+// cannot see makes the provider refuse the WHOLE filter — so the samples may only name
+// tools every DSH deployment has.
+{
+  const starter = starterConfig()
+  check('the samples cover five shapes of work',
+    starter.tasks.map(task => task.id),
+    ['general', 'web-search', 'bulk', 'drawing', 'modelling'])
+  check('every sample is switchable on but routes nothing yet',
+    starter.tasks.every(task => task.enabled === true && (task.pool ?? []).length === 0), true)
+  check('no sample ships a model', /provider|model:/u.test(JSON.stringify(starter.tasks)), false)
+  check('the samples are written in English',
+    /[\u4e00-\u9fff]/u.test(JSON.stringify(starter.tasks)), false)
+  check('every sample describes itself for the classifier',
+    starter.tasks.every(task => typeof task.description === 'string' && task.description.length > 40), true)
+  check('every sample gives its executor a persona',
+    starter.tasks.every(task => typeof task.childPersona === 'string' && task.childPersona.length > 80), true)
+
+  // Only tools DSH itself registers in an agent scope: a name a deployment does not
+  // have voids the entire filter, which is worse than no filter at all.
+  const PORTABLE_TOOLS = new Set(['read', 'write', 'edit', 'glob', 'grep', 'pwsh', 'web_fetch', 'web_search'])
+  const named = starter.tasks.flatMap(task => task.childTools?.deny ?? [])
+  check('the samples only scope tools every deployment has',
+    named.filter(name => !PORTABLE_TOOLS.has(name)), [])
+  check('and they scope tools on the tasks that clearly need it',
+    starter.tasks.filter(task => task.childTools !== undefined).map(task => task.id),
+    ['web-search', 'bulk'])
+  // The point of the bulk task: per-item thinking must stay shallow.
+  check('the volume sample asks for the cheap reasoning level',
+    starter.tasks.find(task => task.id === 'bulk')?.reasoningEffort, 'low')
+}
+
 // ── validation ──────────────────────────────────────────────────────────────
 check('non-object config is rejected', validateConfig(null).ok, false)
 check('bad task id is rejected', validateConfig({ tasks: [{ id: 'Bad Id', pool: [] }] }).ok, false)

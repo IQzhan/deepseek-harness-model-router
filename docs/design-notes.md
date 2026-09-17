@@ -33,7 +33,7 @@
 
 | 级别 | 依据 | 代价 | 例子 |
 | --- | --- | --- | --- |
-| 1 | 显式指令 `[task: web-research]` | 零 | 用户在消息里点名 |
+| 1 | 显式指令 `[task: web-search]` | 零 | 用户在消息里点名 |
 | 2 | 技能 / 关键词 / 工具表 | 零 | `[skill: diy-freecad]`、命中"建模"、请求声明了某工具 |
 | 3 | **语义分类**（独立模型调用） | 一次廉价调用/轮 | "把这个零件做出来" |
 | 4 | 默认任务 | 零 | 都没命中时兜底 |
@@ -161,9 +161,9 @@ smooth WRR 输出 `a b a`——这才是"均衡"该有的样子。
 所以要"专用精炼"，控制的是**这两件事**：
 
 ```yaml
-- id: web-research
+- id: web-search
   childPersona: |-
-    你是联网检索执行者。只用你手上的工具完成被交付的检索任务，交付带来源的结论后停止。
+    You are the executor for one look-up. Answer from sources you actually opened, and cite them.
   childTools:
     allow: [web_search, web_fetch, read, write]   # 或 deny: [...]
 ```
@@ -282,7 +282,7 @@ smooth WRR 输出 `a b a`——这才是"均衡"该有的样子。
 插件就把 `[task: <id>]` 追加到子智能体开场指令的**末尾**，路由因此**确定性命中**：
 不调分类器、零 token、100% 稳定。没选时才走关键词 → 语义分类。
 
-> 为什么在末尾：真实会话里，**前置**标记变成了子会话的侧栏标题（"[task: web-research] 你必须加载 web"）。
+> 为什么在末尾：真实会话里，**前置**标记变成了子会话的侧栏标题（"[task: web-search] 你必须加载 web"）。
 > 标题取自首条消息的开头，而 `matchDeterministic` 是全文扫描，所以放末尾零成本且标题干净。
 
 > 已验证（真实 `ToolRuntime`，非文档推断）：作用域自有注册会遮蔽继承的同名工具；

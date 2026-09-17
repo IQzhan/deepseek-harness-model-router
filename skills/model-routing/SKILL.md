@@ -39,8 +39,23 @@ $DSH_HOME/model-routing/
 
 ### tasks/<id>.yml
 
-任务 id 由**文件名**决定：只允许小写字母、数字、连字符（`web-research`）。
+任务 id 由**文件名**决定：只允许小写字母、数字、连字符（`web-search`）。
 文件体里**不要**再写 `id`，写了也会被文件名覆盖。
+
+### 首次安装自带的五个样本
+
+只在你**从没保存过配置**时生效（`/health` 的 `configuration.samples` 为 `true`）：五个英文任务
+`general` / `web-search` / `bulk` / `drawing` / `modelling`，**池全空**（不替你选模型），每条都有
+一句通用 `childPersona`。它们不落盘——页面显示、你保存时才写文件；一旦有任何文件存在，样本再也不
+出现，**升级永不覆盖你写的内容**。
+
+**`childTools` 要谨慎用。** 过滤器的失效方式是"整体作废"：只要列表里有**一个名字不在子会话的工具表
+里**，provider 会拒绝**整个过滤器**，插件只能丢掉它重试（并在健康面记一条降级）。所以：
+
+- 默认**别写** `childTools`：继承全部工具通常是对的（建模要查规格、绘图要参考、通用任务什么都要）。
+- 只写**无歧义**的排除，且只用 DSH 自带、任何部署都有的工具名（`read`/`write`/`edit`/`glob`/`grep`/
+  `pwsh`/`web_fetch`/`web_search`）。样本里只有两处：联网搜索不写文件/不开 shell，批量杂务不联网。
+- 想给你自己的任务精确划线，就在设置页用**工具勾选**（它读的是 Host 的真实工具表），别凭记忆写名字。
 
 | 字段 | 类型 | 作用 |
 | --- | --- | --- |
@@ -91,7 +106,7 @@ $DSH_HOME/model-routing/
 | 用户说 | 你要改 |
 | --- | --- |
 | "建模任务用 X 和 Y，X 多一点" | `tasks/modelling.yml` 的 `pool`（权重比） |
-| "联网搜索别用 A 了" | `tasks/web-research.yml` 的 `pool` 删掉那条 |
+| "联网搜索别用 A 了" | `tasks/web-search.yml` 的 `pool` 删掉那条 |
 | "以后没命中就用 Z" | `global.yml` 的 `defaultTaskId: Z` |
 | "让 diy 预设也用上" | `global.yml` 的 `presets.diy: { enabled: true }` |
 | "先关掉这个插件" | `global.yml` 的 `enabled: false`（比停用插件更轻，页面也能看到） |

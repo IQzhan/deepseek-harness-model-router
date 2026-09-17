@@ -211,7 +211,7 @@ if (setupError === undefined) {
 
   const TASKS = [
     { id: 'modelling', name: '3D 建模', description: '三维建模、CAD、机械结构设计、导出 STL/STEP、3D 打印件设计' },
-    { id: 'web-research', name: '联网检索', description: '联网搜索、查资料、读网页、核实最新信息' },
+    { id: 'web-search', name: 'Web search', description: 'Look things up on the open web and check them' },
     { id: 'general', name: '通用子任务', description: '没有明确专业归属的日常子任务：整理、改写、核对、简单查询' },
   ]
 
@@ -281,7 +281,7 @@ if (setupError === undefined) {
       ['semantic: a CAD request with no keywords',
         '我需要给一个行星齿轮减速器做参数化设计，最后要能直接送去打印', 'modelling'],
       ['semantic: a current-events request with no keywords',
-        '帮我确认一下上周发布的那份行业报告里的数字是不是真的', 'web-research'],
+        '帮我确认一下上周发布的那份行业报告里的数字是不是真的', 'web-search'],
       ['semantic: housekeeping with no keywords',
         '把刚才那几段话合并成一段，语气再正式一点', 'general'],
     ]) {

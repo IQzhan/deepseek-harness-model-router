@@ -89,33 +89,111 @@ export function defaultConfig() {
 }
 
 /**
- * A small, opinionated starting point. Installing the plugin with no stored
- * settings gets a working router that is switched OFF, so nothing changes until
- * the user turns it on from Settings.
+ * The samples written on a FIRST install, and only then.
+ *
+ * These are templates, not a configuration: every `pool` is empty on purpose, so the
+ * router has nothing to route until the operator fills one in, and an upgrade never
+ * rewrites what they wrote (the store only ever writes this document when the folder
+ * does not exist yet).
+ *
+ * Five shapes of work cover most of what gets delegated, and each is described
+ * GENERICALLY: no framework, no file format, no vendor is named, because a sample that
+ * teaches by example is only followed for that example. What each one carries:
+ *
+ *   · `description` — the only text the semantic classifier reads. It says what the
+ *     work IS, which is what a router needs to recognise it.
+ *   · `keywords` — a deterministic shortcut, matched against the request text. Written
+ *     in English here; put them in the language you actually write requests in, or
+ *     leave them empty and let the classifier decide.
+ *   · `childPersona` — the child's whole system prompt, replacing the inherited one.
+ *     It states what the executor must DELIVER and where its boundary is, in three or
+ *     four lines. Keep it short: it is a prompt, not a manual.
+ *   · `childTools` — a tool scope, and only where the exclusion is unambiguous.
+ *     Deliberately absent from most samples: a name the child cannot see makes the
+ *     provider refuse the WHOLE filter, so a scope is worth declaring only when the
+ *     task clearly does not need those tools at all.
+ *   · `reasoningEffort` — only where the work is genuinely cheap per item.
  */
 export function starterConfig() {
   const config = defaultConfig()
   config.tasks = [
     {
-      id: 'modelling',
-      name: '3D 建模',
-      description: '三维建模、CAD、机械结构设计、导出 STL/STEP、3D 打印件设计',
+      id: 'general',
+      name: 'General tasks',
+      description: 'Everyday work that does not need a speciality: gather and reshape information, '
+        + 'read or edit a few files, answer a question, carry out a small change end to end.',
       enabled: true,
-      keywords: ['3D建模', '建模', 'FreeCAD', 'Blender', 'STL', 'STEP'],
-      pool: [
-        { provider: 'google', model: 'gemini-3.7-flash', weight: 2 },
-        { provider: 'google', model: 'gemini-3.6-flash', weight: 1 },
-      ],
+      keywords: [],
+      childPersona: [
+        'You are the executor for one closed task. Do exactly the part you were given and return the',
+        'result to the parent; the parent keeps the coordination and the user conversation.',
+        'State what you did, what you verified, and anything you could not determine.',
+      ].join('\n'),
+      pool: [],
     },
     {
-      id: 'web-research',
-      name: '联网检索',
-      description: '联网搜索、查资料、读网页、核实最新信息',
+      id: 'web-search',
+      name: 'Web search and verification',
+      description: 'Look things up on the open web and check them: find current facts, compare sources, '
+        + 'confirm or refute a claim, and report where each answer came from.',
       enabled: true,
-      keywords: ['联网搜索', '搜索', '查一下', '最新'],
-      pool: [
-        { provider: 'openrouter', model: 'openrouter/free', weight: 1 },
-      ],
+      keywords: ['search the web', 'look up', 'find out', 'latest', 'verify', 'fact check'],
+      childPersona: [
+        'You are the executor for one look-up. Answer from sources you actually opened, and cite them;',
+        'say plainly when a claim could not be confirmed rather than filling the gap from memory.',
+        'Return the finding and its sources. Do not write files or run commands: the parent stores the result.',
+      ].join('\n'),
+      // A look-up reads and reports; it never needs to write files or drive a shell.
+      childTools: { deny: ['write', 'edit', 'pwsh'] },
+      pool: [],
+    },
+    {
+      id: 'bulk',
+      name: 'High-volume simple work',
+      description: 'A large number of small, similar items where one cheap pass per item is enough: '
+        + 'rename or reformat in bulk, classify or extract one field, apply the same edit everywhere.',
+      enabled: true,
+      keywords: ['in bulk', 'for each', 'all of them', 'batch'],
+      childPersona: [
+        'You are the executor for a large batch of small, similar items. Handle them one by one, give every',
+        'item exactly the same treatment, and do not add commentary or extra fields.',
+        'Report how many items you processed and list any you had to skip, with the reason.',
+      ].join('\n'),
+      // Batch work is local: looking things up on the web is not part of it.
+      childTools: { deny: ['web_fetch', 'web_search'] },
+      // The point of this task: per-item thinking must stay shallow, or the volume is
+      // what makes it expensive.
+      reasoningEffort: 'low',
+      pool: [],
+    },
+    {
+      id: 'drawing',
+      name: 'Drawings and diagrams',
+      description: 'Produce a visual artefact: diagrams, charts, plots, schematics or illustrations, '
+        + 'as a file or as source that renders to one.',
+      enabled: true,
+      keywords: ['diagram', 'chart', 'plot', 'illustration', 'draw'],
+      childPersona: [
+        'You are the executor for one drawing. Produce the artefact that was asked for, in a format that',
+        'opens without extra setup, and keep it legible at the size it will be used.',
+        'State the format you produced, how to open it, and anything the parent must adjust.',
+      ].join('\n'),
+      pool: [],
+    },
+    {
+      id: 'modelling',
+      name: '3D modelling and CAD',
+      description: 'Three-dimensional work: parametric parts and assemblies, mechanical design, '
+        + 'printable geometry, and exports for printing or machining.',
+      enabled: true,
+      keywords: ['3d model', 'cad', 'parametric', 'printable', 'step file'],
+      childPersona: [
+        'You are the executor for one piece of three-dimensional work. Build the part you were given,',
+        'keep the geometry parametric where the request allows it, and verify the result is watertight',
+        'or otherwise sound before you report.',
+        'Report units, key dimensions and the file formats you produced.',
+      ].join('\n'),
+      pool: [],
     },
   ]
   return config
