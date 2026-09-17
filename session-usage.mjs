@@ -142,10 +142,11 @@ if (sessionFilter !== undefined) {
     process.exitCode = 1
   } else {
     console.log(`${target.id}  ${JSON.stringify(String(target.title).slice(0, 70))}\n`)
-    console.log('turn  steps  model                                      input      output     cacheRead        total')
+    console.log('turn  steps  model                                      input      output     cacheRead        total  from')
     for (const [key, bucket] of [...target.perTurn].sort((a, b) => Number(a[0].split('\u0000')[0]) - Number(b[0].split('\u0000')[0]))) {
       const [turn, model] = key.split('\u0000')
-      console.log(`${turn.padStart(4)}  ${String(bucket.steps).padStart(5)}  ${model.padEnd(40)} ${String(bucket.input).padStart(9)} ${String(bucket.output).padStart(11)} ${String(bucket.cacheRead).padStart(13)} ${String(bucket.total).padStart(12)}`)
+      const from = bucket.firstAt === undefined ? '' : new Date(bucket.firstAt).toISOString().slice(11, 19)
+      console.log(`${turn.padStart(4)}  ${String(bucket.steps).padStart(5)}  ${model.padEnd(40)} ${String(bucket.input).padStart(9)} ${String(bucket.output).padStart(11)} ${String(bucket.cacheRead).padStart(13)} ${String(bucket.total).padStart(12)}  ${from}`)
     }
   }
 } else if (modelFilter !== undefined) {
