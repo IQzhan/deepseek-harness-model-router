@@ -1144,6 +1144,12 @@ function isDelegationTool(name) {
  *     default allow list, so declaring one no longer silently hands the child
  *     back the controller tools that list had removed.
  *
+ * Both spellings resolve to the SAME mechanism — an allow list — because that is
+ * the only form that can remove a tool the child's own preset registers. The two
+ * spellings are still not interchangeable: `allow` is a fixed list that a future
+ * tool is not added to, while `deny` is "everything inherited except these" and
+ * does pick up a tool a later release adds.
+ *
  * @param declared - the task's `childTools`, when it declares one.
  * @param base - the deployment's default allow list, undefined when the operator
  *   allows children to delegate.
@@ -1153,8 +1159,15 @@ function childToolFilter(declared, base) {
   const allow = Array.isArray(declared?.allow) ? [...declared.allow] : undefined
   const deny = Array.isArray(declared?.deny) ? [...declared.deny] : []
   // An explicit `allow` IS the operator's statement of what a child may have: it
-  // already excludes everything else, delegation included.
-  if (allow !== undefined) return allow.length === 0 ? undefined : { allow }
+  // already excludes everything else, delegation included. A `deny` beside it
+  // SUBTRACTS from it rather than being ignored — a file that names one tool in
+  // both reads as "these, minus that", and silently granting the tool anyway is
+  // the single outcome nobody can see. An empty result keeps the existing "no
+  // filter" convention (never zero tools) and is warned about by the validator.
+  if (allow !== undefined) {
+    const kept = allow.filter(name => !deny.includes(name))
+    return kept.length > 0 ? { allow: kept } : undefined
+  }
   if (deny.length === 0) return base
   // A `deny` is folded INTO the default allow list rather than replacing it. The
   // two are independent statements ("no `pwsh`" and "no delegation"), and letting

@@ -422,7 +422,7 @@ const clientModule = [
 
 const manifest = {
   name: ROUTER_NAME,
-  version: '1.0.9',
+  version: '1.0.10',
   private: true,
   description: 'Task-aware model routing with global load balancing for DeepSeek Harness.',
   type: 'commonjs',

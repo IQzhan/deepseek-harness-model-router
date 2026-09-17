@@ -1863,6 +1863,33 @@ function enable(stubs, { preset = 'diy-smart', tasks, defaultTaskId = 'general' 
     (row?.unmasked ?? []).includes('subagent_message'), false)
 }
 
+// 18k. A task that declares BOTH spellings: `deny` subtracts from `allow`.
+//      It used to be ignored outright as soon as `allow` was present, so a file
+//      that read as "these, minus that" silently granted the tool it named in
+//      both — the one outcome an operator cannot see from the file.
+{
+  const agent = fakeAgent({ preset: 'diy-smart' })
+  const subagents = makeSubagents()
+  const stubs = await mount(undefined, undefined, { agents: [agent], subagents })
+  enable(stubs, {
+    preset: 'diy-smart',
+    tasks: [
+      { id: 'modelling', name: '3D', description: '三维', enabled: true,
+        childTools: { allow: ['read', 'pwsh', 'glob'], deny: ['pwsh'] },
+        pool: [{ provider: 'google', model: 'gemini-3.7-flash', weight: 1 }] },
+    ],
+  })
+  await mountSync(stubs)
+  await agent.registered.get('subagent').execute(
+    { description: 'part', prompt: 'Build it.', task: 'modelling' },
+    { agent, signal: new AbortController().signal },
+  )
+  const both = subagents.starts[0].request.toolFilter
+  check('a deny subtracts from an explicit allow list', both.allow.includes('pwsh'), false)
+  check('and the rest of the allow list survives', both.allow.includes('read'), true)
+  check('and no deny list rides along either', both.deny, undefined)
+}
+
 
 // 18h. A tool filter the child cannot honour loses the FILTER, not the
 //      delegation — and only a filter refusal is retried.

@@ -479,6 +479,15 @@ export function validateConfig(config) {
                 report.fail(field, `childTools.${key} must be an array of non-empty tool names`)
               }
             }
+            // Two spellings for one field is a trap for every reader that knows
+            // only one of them — which is exactly how the settings page came to
+            // display a `deny` document as "no tools at all". A document may
+            // still declare both (deny subtracts from allow), but the redundancy
+            // is stated rather than left for the next reader to misread.
+            if (Array.isArray(tools.allow) && tools.allow.length > 0
+              && Array.isArray(tools.deny) && tools.deny.length > 0) {
+              report.warn(field, 'childTools declares both allow and deny; deny is subtracted from allow')
+            }
           }
         }
         if (task.keywords !== undefined) {

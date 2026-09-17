@@ -152,6 +152,17 @@ const COPY = {zh: {
   'childProfile.toolFilterLabel': '限制子智能体可用工具',
   'childProfile.toolFilterWarn': '读不到工具清单：请确认 Host 半边已重启',
   'childProfile.toolFilterHint': '不勾选 = 继承父预设的全部工具',
+  'childProfile.toolModeAll': '不限制（继承全部）',
+  'childProfile.toolModeAllow': '只允许勾选的（白名单）',
+  'childProfile.toolModeDeny': '除勾选外都允许（黑名单）',
+  'childProfile.toolModeAllHint': '子智能体拿到父预设的全部工具（委派工具除外）。',
+  'childProfile.toolModeAllowHint': '固定白名单：只给勾选的这些。以后 DSH 新增的工具不会自动获得——要自己去文件里加。',
+  'childProfile.toolModeDenyHint': '黑名单：继承来的工具里去掉勾选的这些。以后 DSH 新增的工具会自动获得，不必回来改。',
+  'childProfile.toolModeBothWarn': '文件里同时写了 allow 和 deny：Host 按「allow 减去 deny」生效，这里显示的就是那个结果；保存后只保留白名单。',
+  'childProfile.toolModeLast': '至少保留一个：空的白名单在这里等于「不限制」，和你取消勾选的意思正好相反。',
+  'task.expand': '展开', 'task.collapse': '收起',
+  'task.badgeModels': '{count} 个模型',
+  'task.badgeToolsAllow': '白名单 {count}', 'task.badgeToolsDeny': '黑名单 {count}',
   'childProfile.hint': '子智能体没有自己的预设——它继承父预设。这两项是让它专用于本任务的办法：提示词会整体替换继承来的那段（作用域同名遮蔽 + complete），工具只留你勾的。无论怎么设置，子智能体都拿不到委派工具，能否再细分只由「委派工具」开关决定。',
   'pool.title': '模型池',
   'pool.modelCount': '{count} 个模型 · 权重合计 {total}',
@@ -295,6 +306,17 @@ const COPY = {zh: {
   'childProfile.toolFilterLabel': 'Limit sub-agent available tools',
   'childProfile.toolFilterWarn': 'Cannot read tool list: please confirm the Host side has restarted',
   'childProfile.toolFilterHint': 'Unchecked = inherit all tools from parent preset',
+  'childProfile.toolModeAll': 'No restriction (inherit all)',
+  'childProfile.toolModeAllow': 'Only the ones ticked (allow list)',
+  'childProfile.toolModeDeny': 'All except the ones ticked (deny list)',
+  'childProfile.toolModeAllHint': 'The sub-agent gets every tool of the parent preset, except the delegation tools.',
+  'childProfile.toolModeAllowHint': 'A fixed allow list: only the ticked tools. A tool a later DSH release adds is NOT granted, so come back and add it yourself.',
+  'childProfile.toolModeDenyHint': 'A deny list: the inherited tools minus the ticked ones. A tool a later DSH release adds IS granted automatically.',
+  'childProfile.toolModeBothWarn': 'The file declares both allow and deny: the Host applies allow minus deny, which is what is shown here. Saving keeps the allow list only.',
+  'childProfile.toolModeLast': 'Keep at least one: an empty allow list means "no restriction" here, the opposite of unticking it.',
+  'task.expand': 'Expand', 'task.collapse': 'Collapse',
+  'task.badgeModels': '{count} models',
+  'task.badgeToolsAllow': 'allow {count}', 'task.badgeToolsDeny': 'deny {count}',
   'childProfile.hint': 'Sub-agents have no separate presets — they inherit the parent. These two controls let you specialize them for this task: the prompt replaces the inherited one entirely (scope shadowing + complete), and only the tools you check remain. No matter the setting, sub-agents never receive the delegation tool; further subdivision depends solely on the "Delegation Tools" toggle.',
   'pool.title': 'Model Pool',
   'pool.modelCount': '{count} models · Total weight {total}',
@@ -449,6 +471,14 @@ const STYLES = `
 .dsh-mr-task:first-of-type { margin-top:0; }
 .dsh-mr-task-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
 .dsh-mr-task-head input[type=text] { width:158px; font-weight:600; }
+/* A closed card keeps its head: the twisty opens it, and the badges state the
+   model count and the tool spelling so a closed card is still informative. */
+.dsh-mr-task.open .dsh-mr-task-head { margin-bottom:0; }
+.dsh-mr-task-name { font-weight:600; opacity:.85; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:38ch; }
+.dsh-mr-twisty { font:inherit; line-height:1; padding:2px 6px; background:none; border:1px solid transparent;
+  border-radius:5px; cursor:pointer; opacity:.7; }
+.dsh-mr-twisty:hover { border-color:var(--dsh-border, rgba(128,128,128,.35)); opacity:1; }
+.dsh-mr-task-body { margin-top:12px; }
 /* One field per row: two columns made the keyword box and the name box fight
    for the same line and left both too narrow to read. */
 .dsh-mr-grid2 { display:grid; grid-template-columns:1fr; gap:14px; }
@@ -936,6 +966,84 @@ function defaultChildTools(names) {
 const DEFAULT_CHILD_TOOLS = ['read', 'write', 'edit', 'glob', 'grep']
 
 /**
+ * What a task's `childTools` MEANS, in a shape the page can edit.
+ *
+ * The document has two spellings for this one field, and they are not
+ * equivalent: `allow` is a fixed list that a tool added by a later release is
+ * NOT granted, while `deny` is "everything inherited except these" and does pick
+ * that tool up. An earlier version of this page understood only `allow`, so a
+ * `deny` document rendered as "filter on, nothing ticked" — the exact opposite
+ * of what it said — and the next tick rewrote it into an allow list of one
+ * tool. Both spellings are therefore carried through as themselves, and the page
+ * states which one is in force instead of guessing.
+ *
+ * @param task - the task being edited.
+ * @returns `{ mode, list, resolved }`: `mode` is the spelling in force
+ *   (`'all'`, `'allow'` or `'deny'`), `list` holds the tools the boxes are drawn
+ *   from, and `resolved` is true when the document declared BOTH spellings, in
+ *   which case the Host applies allow-minus-deny and `list` is that result.
+ */
+function childToolsView(task) {
+  const declared = task?.childTools
+  if (declared === null || typeof declared !== 'object' || Array.isArray(declared)) {
+    return { mode: 'all', list: [], resolved: false }
+  }
+  const allow = Array.isArray(declared.allow) ? declared.allow : undefined
+  const deny = Array.isArray(declared.deny) ? declared.deny : undefined
+  if (allow !== undefined && deny !== undefined) {
+    return { mode: 'allow', list: allow.filter(name => !deny.includes(name)), resolved: true }
+  }
+  if (allow !== undefined) return { mode: 'allow', list: allow, resolved: false }
+  if (deny !== undefined) return { mode: 'deny', list: deny, resolved: false }
+  return { mode: 'all', list: [], resolved: false }
+}
+
+/**
+ * Switch a task's tool scope from one spelling to another.
+ *
+ * Switching to `deny` starts with an EMPTY exclusion list, which excludes
+ * nothing: the alternative — seeding it with tools the operator never chose —
+ * would hide a filter on the page that the file then applies.
+ *
+ * @param current - the stored `childTools`, possibly undefined.
+ * @param mode - the mode the operator picked.
+ * @param toolNames - the tool names the Host reported.
+ * @returns the new `childTools`, or null for "no restriction".
+ */
+function withChildToolsMode(current, mode, toolNames) {
+  if (mode === 'deny') return { deny: [] }
+  if (mode === 'allow') {
+    const declared = current !== null && typeof current === 'object' && Array.isArray(current.allow)
+      ? current.allow
+      : []
+    return { allow: declared.length > 0 ? declared : defaultChildTools(toolNames) }
+  }
+  return null
+}
+
+/**
+ * Tick or untick one tool, writing back in the mode that is in force.
+ *
+ * The KEY written is the mode's own key, which is what keeps a `deny` document a
+ * `deny` document. In `allow` mode the list is never emptied: the Host reads an
+ * empty allow list as "no filter at all", so removing the last box would mean
+ * the opposite of what unticking it said.
+ *
+ * @param current - the stored `childTools`.
+ * @param mode - the mode in force.
+ * @param name - the tool the operator clicked.
+ * @param on - whether it is now ticked.
+ * @returns the new `childTools`.
+ */
+function toggleChildTool(current, mode, name, on) {
+  const list = childToolsView({ childTools: current }).list
+  const next = on ? [...list, name] : list.filter(entry => entry !== name)
+  if (mode === 'deny') return { deny: next }
+  if (next.length === 0) return current ?? null
+  return { allow: next }
+}
+
+/**
  * Reasoning efforts a task may pin, as a click-only list.
  *
  * The adapter owns the vocabulary, so this is a convenience list, not a closed
@@ -1417,6 +1525,17 @@ function TaskRoutingSection(props) {
   const [notice, setNotice] = ReactLib.useState('')
   const [previewText, setPreviewText] = ReactLib.useState('')
   const [previewPreset, setPreviewPreset] = ReactLib.useState('')
+  // Which task cards are open. Every card starts CLOSED: this page carries five
+  // tasks, each with a persona, a tool scope and a model pool, and rendering all
+  // of them at once is what turned it into a scroll. `expandAllTasks` is the
+  // starting point only — an explicit click on a card always wins over it — and
+  // the shell passes nothing, so entering the page always shows the short form.
+  const [openTasks, setOpenTasks] = ReactLib.useState(() => (props.expandAllTasks === true ? { all: true } : {}))
+  const isTaskOpen = (index) => (openTasks[index] === undefined
+    ? openTasks.all === true
+    : openTasks[index] === true)
+  const toggleTask = (index) => setOpenTasks(
+    previous => ({ ...previous, [index]: !isTaskOpen(index) }))
   const timer = ReactLib.useRef(null)
   const revision = snapshot.revision
 
@@ -1862,18 +1981,38 @@ function TaskRoutingSection(props) {
           const pool = Array.isArray(task.pool) ? task.pool : []
           const total = pool.reduce((sum, entry) => sum + (Number(entry.weight) || 1), 0)
           const isDefault = defaultTaskId !== '' && task.id === defaultTaskId
-          return E('div', { className: 'dsh-mr-task', key: `${task.id}-${index}` },
-            E('div', { className: 'dsh-mr-task-head' },
-              E('input', {
-                type: 'text', value: task.id ?? '', disabled: !writable,
-                title: t('task.idPlaceholder'),
-                onChange: event => updateTask(index, {
-                  id: event.target.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-'),
-                }),
+          const open = isTaskOpen(index)
+          const toolsView = childToolsView(task)
+          // The head stays on screen when the card is closed and carries the
+          // whole state of the task as badges: which models it can use and which
+          // tool spelling is in force. A collapsed card that says nothing is
+          // just a hidden card.
+          const head = E('div', { className: 'dsh-mr-task-head' },
+            E('button', {
+              type: 'button',
+              className: 'dsh-mr-twisty',
+              'aria-expanded': open,
+              title: open ? t('task.collapse') : t('task.expand'),
+              onClick: () => toggleTask(index),
+            }, open ? '▾' : '▸'),
+            E('input', {
+              type: 'text', value: task.id ?? '', disabled: !writable,
+              title: t('task.idPlaceholder'),
+              onChange: event => updateTask(index, {
+                id: event.target.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-'),
               }),
-              isDefault ? E('span', { className: 'dsh-mr-badge ok' }, t('task.badgeDefault')) : null,
-              task.enabled === false ? E('span', { className: 'dsh-mr-badge warn' }, t('task.badgeDisabled')) : null,
-              E('span', { style: { flex: '1 1 auto' } }),
+            }),
+            E('span', { className: 'dsh-mr-task-name' }, task.name ?? ''),
+            isDefault ? E('span', { className: 'dsh-mr-badge ok' }, t('task.badgeDefault')) : null,
+            task.enabled === false ? E('span', { className: 'dsh-mr-badge warn' }, t('task.badgeDisabled')) : null,
+            E('span', { className: pool.length === 0 ? 'dsh-mr-badge warn' : 'dsh-mr-badge' },
+              t('task.badgeModels').replace('{count}', String(pool.length))),
+            toolsView.mode === 'all'
+              ? null
+              : E('span', { className: 'dsh-mr-badge' },
+                t(toolsView.mode === 'deny' ? 'task.badgeToolsDeny' : 'task.badgeToolsAllow')
+                  .replace('{count}', String(toolsView.list.length))),
+            E('span', { style: { flex: '1 1 auto' } }),
               E('button', {
                 type: 'button', disabled: !writable,
                 onClick: () => edit(current => ({ ...current, defaultTaskId: isDefault ? '' : task.id })),
@@ -1881,8 +2020,9 @@ function TaskRoutingSection(props) {
               E('button', {
                 type: 'button', className: 'dsh-mr-danger', disabled: !writable,
                 onClick: () => setTasks(tasks.filter((_, at2) => at2 !== index)),
-              }, t('task.delete'))),
+              }, t('task.delete')))
 
+          const body = E('div', { className: 'dsh-mr-task-body' },
             E('div', { className: 'dsh-mr-grid2' },
               E(Field, { label: t('task.nameLabel') },
                 E('input', {
@@ -1967,39 +2107,60 @@ function TaskRoutingSection(props) {
               // options behind a click, hides the current selection behind a
               // label, and adds a mode state that has to be kept consistent with
               // the data. Chips show every option AND the current choice at once.
+              // Tools: the MODE is edited, not guessed. The document has two
+              // spellings and only one of them can be in force, so the control
+              // states which one it is and the boxes are drawn from that
+              // spelling's list. A switch plus boxes could not say this: a
+              // `deny` document rendered as "on, nothing ticked" — the opposite
+              // of what it said — and the next tick rewrote it as an allow list.
               E('div', { className: 'dsh-mr-row' },
-                E('input', {
-                  type: 'checkbox', id: `mr-child-tools-${index}`,
-                  checked: at(task, ['childTools'], null) !== null,
-                  disabled: !writable || toolNames.length === 0,
+                E('label', { className: 'dsh-mr-key', htmlFor: `mr-child-tools-mode-${index}` },
+                  t('childProfile.toolFilterLabel')),
+                // The control is drawn even when the tool list has not arrived:
+                // hiding it would hide WHICH spelling is in force, and that is
+                // the whole defect this control exists to fix. Only the boxes
+                // need the list.
+                E('select', {
+                  id: `mr-child-tools-mode-${index}`,
+                  className: 'dsh-mr-grow',
+                  disabled: !writable,
+                  value: toolsView.mode,
                   onChange: event => updateTask(index, {
-                    childTools: event.target.checked ? { allow: defaultChildTools(toolNames) } : null,
+                    childTools: withChildToolsMode(task.childTools, event.target.value, toolNames),
                   }),
-                }),
-                E('label', { htmlFor: `mr-child-tools-${index}` }, t('childProfile.toolFilterLabel')),
+                },
+                  E('option', { value: 'all' }, t('childProfile.toolModeAll')),
+                  E('option', { value: 'allow' }, t('childProfile.toolModeAllow')),
+                  E('option', { value: 'deny' }, t('childProfile.toolModeDeny'))),
                 toolNames.length === 0
                   ? E('span', { className: 'dsh-mr-badge warn' }, t('childProfile.toolFilterWarn'))
-                  : E('span', { className: 'dsh-mr-hint' }, t('childProfile.toolFilterHint'))),
+                  : null),
 
-              at(task, ['childTools'], null) === null || toolNames.length === 0
+              E('div', { className: 'dsh-mr-hint' },
+                t(toolsView.mode === 'deny'
+                  ? 'childProfile.toolModeDenyHint'
+                  : toolsView.mode === 'allow' ? 'childProfile.toolModeAllowHint' : 'childProfile.toolModeAllHint')),
+
+              toolsView.resolved
+                ? E('div', { className: 'dsh-mr-badge warn' }, t('childProfile.toolModeBothWarn'))
+                : null,
+
+              toolsView.mode === 'all' || toolNames.length === 0
                 ? null
                 : E('div', { className: 'dsh-mr-tools' },
                   toolNames.map(name => {
-                    const allowed = at(task, ['childTools', 'allow'], [])
-                    const on = Array.isArray(allowed) && allowed.includes(name)
+                    const on = toolsView.list.includes(name)
+                    // The last tool of an allow list cannot be removed: the Host
+                    // reads an empty list as "no filter", which is the opposite
+                    // of what removing it would mean.
+                    const pinned = toolsView.mode === 'allow' && on && toolsView.list.length === 1
                     return E('label', { key: name, className: on ? 'dsh-mr-tool on' : 'dsh-mr-tool' },
                       E('input', {
-                        type: 'checkbox', checked: on, disabled: !writable,
-                        onChange: event => {
-                          const base = Array.isArray(allowed) ? allowed : []
-                          const next = event.target.checked
-                            ? [...base, name]
-                            : base.filter(entry => entry !== name)
-                          // An empty allow list would mean "no tools at all", which
-                          // is never what ticking the last box off means. Off is
-                          // off: the switch above turns itself off instead.
-                          updateTask(index, { childTools: next.length === 0 ? null : { allow: next } })
-                        },
+                        type: 'checkbox', checked: on, disabled: !writable || pinned,
+                        title: pinned ? t('childProfile.toolModeLast') : undefined,
+                        onChange: event => updateTask(index, {
+                          childTools: toggleChildTool(task.childTools, toolsView.mode, name, event.target.checked),
+                        }),
                       }),
                       E('code', null, name))
                   })),
@@ -2027,6 +2188,10 @@ function TaskRoutingSection(props) {
                 E('button', { type: 'button', disabled: !writable, onClick: () => addModel(index) }, t('pool.addModel')),
                 E('span', { className: 'dsh-mr-hint' },
                   t('pool.weightHint')))))
+
+          return E('div', { className: open ? 'dsh-mr-task open' : 'dsh-mr-task', key: `${task.id}-${index}` },
+            head,
+            open ? body : null)
         }),
       E('div', { className: 'dsh-mr-row', style: { marginTop: '16px' } },
         E('button', { type: 'button', disabled: !writable, onClick: addTask }, t('newTaskButton')))),
@@ -2139,6 +2304,7 @@ export const __testing = {
   sectionBoundary, optionalFace, canonical, sameConfig, diffFields, diffOps,
   EDITABLE_PATHS, executorPersona, EXECUTOR_PERSONA: executorPersona(),
   DEFAULT_CHILD_TOOLS, normalizeTask, defaultChildTools,
+  childToolsView, withChildToolsMode, toggleChildTool,
   createConfigMirror, NAMESPACE,
 }
 

@@ -55,6 +55,22 @@ function config() {
   }
 }
 
+/**
+ * A document whose tool scope is written as a DENY list.
+ *
+ * This is the shape the samples ship (`{ deny: ['write', 'edit', 'pwsh'] }`) and the
+ * one the page used to misrepresent: it understood `allow` only, so a deny document
+ * rendered as "filter on, nothing ticked" — the opposite of what it said — and the
+ * next tick rewrote it into an allow list of one tool. Every assertion below about
+ * this fixture is a regression test for that.
+ */
+function denyConfig() {
+  const document = config()
+  document.tasks[0].childTools = { deny: ['pwsh', 'write'] }
+  document.tasks[1].childTools = { allow: ['read', 'write', 'edit'], deny: ['edit'] }
+  return document
+}
+
 const PROVIDERS = [{ id: 'google', name: 'google' }, { id: 'or', name: 'or' }]
 const MODELS = {
   google: [
@@ -188,11 +204,17 @@ function load(value, status = 'ready', overrides = {}) {
  */
 function render(label, ...args) {
   const loaded = load(...args)
+  const overrides = args[2] ?? {}
   try {
     // The shell merges the owner props with whatever `inject()` returns; the
     // component reads its faces from props, so the test must do the same.
     const faces = typeof loaded.page.options.inject === 'function' ? loaded.page.options.inject() : {}
-    const html = renderToString(React.createElement(loaded.page.component, { ...faces, close: () => {} }))
+    // Every task card starts CLOSED, because five open cards is the scroll this
+    // page was. The body assertions below therefore ask for the expanded start;
+    // the collapsed default is asserted on its own with `collapsed: true`.
+    const html = renderToString(React.createElement(loaded.page.component, {
+      ...faces, close: () => {}, expandAllTasks: overrides.collapsed === true ? undefined : true,
+    }))
     check(`renders: ${label}`, true, true)
     return { html, loaded }
   } catch (error) {
@@ -266,9 +288,9 @@ function render(label, ...args) {
   check('and offers the template as a click, not a mode',
     html.includes('填入通用执行者模板'), true)
   check('the reasoning effort picker is present', html.includes('推理强度'), true)
-  // Tools are a switch plus tags: every option and the current choice visible at
-  // once, with no dropdown hiding either.
-  check('the tool filter is a labelled switch', html.includes('限制子智能体可用工具'), true)
+  // Tools are a MODE plus tags: the document has two spellings for one field and
+  // only one of them can be in force, so the control says which one it is.
+  check('the tool filter is a labelled control', html.includes('限制子智能体可用工具'), true)
   // The tool list arrives in an effect, so a server render shows the empty-list
   // branch — which must SAY why the switch is unavailable instead of going grey
   // with no explanation (the failure the operator actually hit). The behaviour
@@ -285,11 +307,103 @@ function render(label, ...args) {
   check('task cards are rendered', (html.match(/dsh-mr-task\b/g) ?? []).length >= 2, true)
   check('the model pool shows weights', html.includes('权重合计 3'), true)
   check('the pool shows the share per model', html.includes('67%') && html.includes('33%'), true)
-  // The roster arrives from an async service, so a server render always sees an empty list; what matters here is that the section renders and explains itself.\n  check('the grant section renders', html.includes('按预设授权'), true)\n  check('the grant section explains an empty roster', html.includes('读不到预设清单'), true)
+  // The roster arrives from an async service, so a server render always sees an
+  // empty list; what matters here is that the section renders and explains itself.
+  check('the grant section renders', html.includes('按预设授权'), true)
+  check('the grant section says when the roster is empty', html.includes('预设清单为空'), true)
   check('the runtime readout names the catalog source', html.includes('模型目录'), true)
   check('and says it is the same source as the model picker', html.includes('与输入框旁的模型选择器同源'), true)
   check('the preview section is present', html.includes('路由预览'), true)
   check('the page never prints a bare "undefined"', html.includes('undefined'), false)
+}
+
+// ── task cards: closed on entry, informative while closed ───────────────────
+{
+  const { html } = render('closed by default', config(), 'ready', { collapsed: true })
+  check('every card starts closed', html.includes('dsh-mr-task-body'), false)
+  check('a closed card is still a card', (html.match(/dsh-mr-task\b/g) ?? []).length >= 2, true)
+  // A closed card that says nothing is a hidden card: the head keeps the identity,
+  // the model count and the tool spelling in force.
+  check('and names the task', html.includes('3D modelling'), true)
+  check('and states the model count', html.includes('2 个模型'), true)
+  check('and offers a twisty per card', (html.match(/dsh-mr-twisty/g) ?? []).length >= 2, true)
+  check('and marks it as closed for assistive tech', html.includes('aria-expanded="false"'), true)
+}
+{
+  const { html } = render('expanded on request', config(), 'ready', {})
+  check('the expanded start renders the body', html.includes('dsh-mr-task-body'), true)
+  check('and marks the card open for assistive tech', html.includes('aria-expanded="true"'), true)
+}
+
+// ── the two tool spellings, on screen ───────────────────────────────────────
+{
+  const { html } = render('a deny document', denyConfig())
+  // The regression this fixture exists for: a deny document used to render as
+  // "filter on, nothing ticked", because only `allow` was ever read — and the
+  // next tick rewrote the file into an allow list of one tool.
+  check('the deny spelling is the one selected', html.includes('除勾选外都允许（黑名单）'), true)
+  check('and the page says what a deny list does about future tools',
+    html.includes('以后 DSH 新增的工具会自动获得'), true)
+  check('and what an allow list does about them',
+    html.includes('以后 DSH 新增的工具不会自动获得'), true)
+  check('the closed head states the deny scope', html.includes('黑名单 2'), true)
+  // A document declaring both spellings is displayed as the Host resolves it, and
+  // says so rather than quietly dropping one of them.
+  check('a document with both spellings explains the resolution',
+    html.includes('同时写了 allow 和 deny'), true)
+  check('and shows the resolved scope in the head', html.includes('白名单 2'), true)
+  // The boxes themselves need the Host's tool list, which only arrives in an
+  // effect — a server render never has it, so the box logic is exercised through
+  // the same functions the boxes call (below), not through this HTML.
+}
+{
+  const { childToolsView, toggleChildTool } = load(config()).moduleObject.__testing
+  // The exact sequence that used to destroy a deny document: open the page on a
+  // deny task, tick one more tool, untick an excluded one, then save.
+  let draft = { deny: ['pwsh'] }
+  draft = toggleChildTool(draft, childToolsView({ childTools: draft }).mode, 'write', true)
+  draft = toggleChildTool(draft, childToolsView({ childTools: draft }).mode, 'pwsh', false)
+  check('editing a deny document never turns it into an allow document', 'deny' in draft, true)
+  check('and the edits land in the deny list', draft.deny, ['write'])
+}
+{
+  const { html } = render('an unrestricted document', config())
+  check('an unrestricted task keeps the no-restriction default', html.includes('不限制（继承全部）'), true)
+  check('and explains that the child inherits everything',
+    html.includes('子智能体拿到父预设的全部工具'), true)
+  // The badge carries a COUNT ("白名单 2"); the select's option text, which is
+  // always on screen, does not — so this asserts the badge, not the word.
+  check('and states no tool scope in the head', /白名单 \d/u.test(html), false)
+}
+
+// ── the tool scope round-trips through the page's own logic ─────────────────
+{
+  const { childToolsView, withChildToolsMode, toggleChildTool } = load(config()).moduleObject.__testing
+  const TOOLS = ['read', 'write', 'edit', 'glob', 'grep', 'pwsh', 'job_list']
+  const deny = { deny: ['pwsh'] }
+  check('a deny document reads as deny mode', childToolsView({ childTools: deny }).mode, 'deny')
+  check('and its list is the deny list', childToolsView({ childTools: deny }).list, ['pwsh'])
+  check('ticking in deny mode writes back a deny list',
+    toggleChildTool(deny, 'deny', 'write', true), { deny: ['pwsh', 'write'] })
+  check('unticking in deny mode removes from the deny list',
+    toggleChildTool(deny, 'deny', 'pwsh', false), { deny: [] })
+  check('an allow document reads as allow mode',
+    childToolsView({ childTools: { allow: ['read'] } }).mode, 'allow')
+  check('ticking in allow mode writes back an allow list',
+    toggleChildTool({ allow: ['read'] }, 'allow', 'edit', true), { allow: ['read', 'edit'] })
+  check('the last allow entry cannot be dropped (an empty list means no filter)',
+    toggleChildTool({ allow: ['read'] }, 'allow', 'read', false), { allow: ['read'] })
+  check('both spellings resolve to allow-minus-deny',
+    childToolsView({ childTools: { allow: ['read', 'edit'], deny: ['edit'] } }).list, ['read'])
+  check('and the page is told the document declared both',
+    childToolsView({ childTools: { allow: ['read'], deny: ['edit'] } }).resolved, true)
+  check('an absent filter reads as no restriction', childToolsView({}).mode, 'all')
+  check('switching to deny starts empty, so no hidden filter appears',
+    withChildToolsMode({ allow: ['read'] }, 'deny', TOOLS), { deny: [] })
+  check('switching to allow seeds the ordinary work tools',
+    withChildToolsMode(null, 'allow', TOOLS), { allow: ['read', 'write', 'edit', 'glob', 'grep'] })
+  check('switching to no restriction writes nothing at all',
+    withChildToolsMode({ deny: ['pwsh'] }, 'all', TOOLS), null)
 }
 
 // ── the preview ladder, driven through the rendered input ───────────────────

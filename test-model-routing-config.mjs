@@ -122,6 +122,16 @@ check('a child tool filter naming a non-string is rejected',
 check('a well-formed child profile is accepted',
   validateConfig({ tasks: [{ id: 'a', childPersona: 'You are an executor.',
     childTools: { deny: ['web_fetch'] }, pool: [{ provider: 'p', model: 'm' }] }] }).ok, true)
+// Two spellings for one field is what made the settings page misread a deny
+// document, so a document that carries both is valid but says so out loud.
+const bothSpellings = validateConfig({ tasks: [{ id: 'a',
+  childTools: { allow: ['read'], deny: ['pwsh'] }, pool: [{ provider: 'p', model: 'm' }] }] })
+check('a filter declaring both spellings is still valid', bothSpellings.ok, true)
+check('and warns which one is applied',
+  bothSpellings.warnings.some(w => w.includes('deny is subtracted from allow')), true)
+check('a single spelling warns about nothing',
+  validateConfig({ tasks: [{ id: 'a', childTools: { deny: ['pwsh'] },
+    pool: [{ provider: 'p', model: 'm' }] }] }).warnings.length, 0)
 check('duplicate route in one pool is rejected',
   validateConfig({ tasks: [{ id: 'a', pool: [{ provider: 'p', model: 'm' }, { provider: 'p', model: 'm' }] }] })
     .problems.some(p => p.includes('repeats route')), true)
