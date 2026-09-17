@@ -119,6 +119,7 @@ child session is rewritten; the main session passes through untouched.
 | `verify.ps1` / `verify.mjs` | Rebuild + run the whole offline suite (PowerShell / any platform) |
 | `verify-live.ps1` | Accepts the **running** deployment: reads the health endpoint and judges PASS/FAIL item by item (read-only, spends no tokens) |
 | `session-peek.mjs` | Reads one session log (zstd concatenated frames) to prove "which model this round actually ran on" |
+| `session-usage.mjs` | Token accounting straight from the session logs: totals per model, per session (`--model`), per turn (`--session`) |
 
 ## Testing
 
@@ -131,7 +132,7 @@ case that writes runs against a **temporary copy** of that same directory; the l
 ran, the live revision has not moved". The temporary directory lives in the repository's `.tmp/` (it does not write
 to the system temp directory and does not touch the C: drive) and is cleaned up when the run finishes.
 
-The suites (9 suites in total, 646 assertions): policy core · configuration files (real filesystem) · adapter layer
+The suites (9 suites in total, 647 assertions): policy core · configuration files (real filesystem) · adapter layer
 (routing seam / delegation tool / health endpoint) · wiring (build artifacts read the real configuration
 directory) · package (two real loaders + skill contract) · settings page (real React rendering) ·
 **bilingual documentation sync** · **portability guard** (no absolute paths, no platform-specific constructs) ·

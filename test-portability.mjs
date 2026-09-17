@@ -34,8 +34,12 @@ function shippedFiles() {
     'dsh-model-router.host.js', 'dsh-model-router.client.js',
     'model-routing-config.js', 'model-routing-store.js',
     'build-router.mjs', 'run-tests.mjs', 'package.json', 'README.md', 'README.zh.md',
-    'LICENSE', 'test-support.mjs', 'session-peek.mjs',
+    'LICENSE', 'test-support.mjs', 'session-peek.mjs', 'session-usage.mjs',
   ]
+  // A named file that no longer exists would otherwise be skipped in silence, so a
+  // rename or a delete could pass this guard while shipping a broken tree.
+  const missing = named.filter(name => !existsSync(join(ROOT, name)))
+  check('every named file is actually there', missing, [])
   const files = named.filter(name => existsSync(join(ROOT, name))).map(name => join(ROOT, name))
   for (const entry of readdirSync(ROOT)) {
     if (entry.startsWith('test-') && entry.endsWith('.mjs')) files.push(join(ROOT, entry))
