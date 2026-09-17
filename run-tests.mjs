@@ -4,6 +4,7 @@
 // the files, the adapter, the artifact, the page) and a failure should point at
 // one of them. This runner is only about not having to remember the list.
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 
 const SUITES = [
   ['test-model-routing-config.mjs', '策略核心：校验、判定阶梯、轮转'],
@@ -30,11 +31,44 @@ for (const [file, label] of SUITES) {
     label,
     ok,
     result: tally === null ? `crashed (exit ${String(run.status)})` : tally[0],
+    // The count each suite reports, so the README's figures can be checked against
+    // reality instead of against memory.
+    asserted: tally === null ? 0 : Number(tally[2]),
   })
   if (!ok) {
     // Only the failing suite's output is echoed: a wall of green hides the reason.
     console.log(output.split('\n').filter(line => /FAIL|Error|error:/.test(line)).slice(0, 12).join('\n'))
   }
+}
+
+// The READMEs state how much is tested. That number is the one thing a structural
+// comparison cannot check (both languages agree on a stale figure just fine), so it is
+// checked HERE, against the run that just happened: a suite that grew without the
+// documentation following fails this run.
+const measured = rows.reduce((total, row) => total + row.asserted, 0)
+// Captured before the documentation rows join `rows`, so the comparison is against the
+// SUITES that ran rather than against the growing report.
+const suiteCount = rows.length
+const docs = [['README.md', /(\d+)\s*suites/], ['README.zh.md', /(\d+)\s*个套件/]]
+const documented = docs.map(([file, suitePattern]) => {
+  const text = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8')
+  const suites = suitePattern.exec(text)
+  const assertions = /(\d+)\s*(?:assertions|条断言)/u.exec(text)
+  return { file, suites: suites?.[1] ?? null, assertions: assertions?.[1] ?? null }
+})
+for (const entry of documented) {
+  const ok = Number(entry.suites) === suiteCount && Number(entry.assertions) === measured
+  if (!ok) failed += 1
+  rows.push({
+    file: entry.file,
+    label: 'the README states this run',
+    ok,
+    result: `${entry.suites ?? '?'} suites / ${entry.assertions ?? '?'} assertions`,
+  })
+}
+if (documented.some(entry => Number(entry.assertions) !== measured)) {
+  console.log(`\nThe run measured ${suiteCount} suites and ${measured} assertions;`
+    + ' update both READMEs (both languages) to match.')
 }
 
 for (const row of rows) {
