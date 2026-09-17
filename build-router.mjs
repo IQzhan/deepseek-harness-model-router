@@ -154,6 +154,33 @@ function assertNoCollision(source, names, label) {
   }
 }
 
+/**
+ * Inline schemastery + cosmokit when the deployment has them, and carry on when
+ * it does not.
+ *
+ * They are needed for ONE thing: `settings.register` resolves a namespace by
+ * CALLING its schema, so the settings-namespace fallback cannot exist without it.
+ * That fallback only applies to a deployment with no configuration folder at all —
+ * the file store is the real source — while the inlining itself has to read the
+ * modules out of an INSTALLED deployment. Requiring that made `node build-router.mjs`
+ * fail on a clean machine, which is exactly the machine a fresh install runs on:
+ * measured, the build aborted with "could not locate @deepseek-ai/schemastery" and
+ * installed nothing at all.
+ *
+ * So: inline when possible, skip with a clear warning when not. The host half
+ * checks for the binding before registering anything and reports the missing
+ * fallback as a degradation (`where: 'settings namespace'`), so nothing is silent.
+ */
+async function inlineSchemasteryOrNothing() {
+  try {
+    return await inlineSchemastery()
+  } catch (error) {
+    console.warn(`build: schemastery/cosmokit not available — ${error instanceof Error ? error.message.split('\n')[0] : error}`)
+    console.warn('build: the settings-namespace fallback will be unavailable; the configuration FILES are unaffected')
+    return ''
+  }
+}
+
 /** Build the inlined schemastery + cosmokit bundle. */
 async function inlineSchemastery() {
   const cosmokitPath = resolvePackageFile('@deepseek-ai/cosmokit', 'lib/index.js')
@@ -270,7 +297,7 @@ assertImportFree(clientSource, 'dsh-model-router.client.js')
 assertNoCollision(coreSource, ['z', 'Schema'], 'model-routing-config.js')
 assertNoCollision(hostSource, ['z', 'Schema'], 'dsh-model-router.host.js')
 
-const inlinedZ = await inlineSchemastery()
+const inlinedZ = await inlineSchemasteryOrNothing()
 
 const banner = `/**
  * ${ROUTER_NAME} — GENERATED FILE, DO NOT EDIT.
@@ -384,7 +411,7 @@ const clientModule = [
 
 const manifest = {
   name: ROUTER_NAME,
-  version: '1.0.7',
+  version: '1.0.8',
   private: true,
   description: 'Task-aware model routing with global load balancing for DeepSeek Harness.',
   type: 'commonjs',
@@ -495,9 +522,22 @@ async function linkIntoProfile() {
 async function linkYamlIntoPackage() {
   if (!existsSync(OUT_PACKAGE)) return undefined
   const source = join(here, 'node_modules', 'yaml')
-  const vendored = existsSync(source)
-    ? source
-    : resolvePackageFile('yaml', 'package.json').replace(/[\\/]package\.json$/, '')
+  let vendored
+  try {
+    vendored = existsSync(source)
+      ? source
+      : resolvePackageFile('yaml', 'package.json').replace(/[\\/]package\.json$/, '')
+  } catch {
+    // A clean machine has neither the checkout's `node_modules` nor a deployment
+    // to borrow from — and a fresh install is exactly that machine. The package
+    // already DECLARES `yaml` as a dependency, so `npm install` (or `dsh plugin
+    // add`, which installs dependencies) provides it; the local link is only how
+    // this checkout binds the deployment's copy. Warning is the honest answer:
+    // failing here installed nothing at all, which is how this was found.
+    console.warn('build: no `yaml` to link into the package — the config files need it at runtime')
+    console.warn(`build: install it where the package lives (${join(OUT_PACKAGE, 'node_modules', 'yaml')})`)
+    return undefined
+  }
   const modules = join(OUT_PACKAGE, 'node_modules')
   await mkdir(modules, { recursive: true })
   const link = join(modules, 'yaml')

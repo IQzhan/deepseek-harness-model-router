@@ -52,6 +52,19 @@ node build-router.mjs
 `build-router.mjs` 会做三件事：构建 `package/`、把它 link 进 profile 的 `node_modules`、
 把随插件附带的 **skill** link 进 `$DSH_HOME/skills/`。
 
+**构建在全新的机器上也能完成**（这条路径实测过：只用一份空的 `DSH_HOME` 跑 `node build-router.mjs`）。
+它需要的东西会按顺序退化，每一步都会在输出里说明：
+
+| 缺什么 | 构建行为 | 影响 |
+| --- | --- | --- |
+| `@deepseek-ai/schemastery` / `cosmokit`（部署里有，新机器上还没有） | 跳过内联，继续构建 | **settings 命名空间兜底**不可用并记为降级（`where: 'settings namespace'`）；配置文件这条路完全不受影响——它才是真正的配置源 |
+| `yaml`（包自己声明了依赖） | 跳过 link，继续构建 | 运行时需要它解析配置文件：在该包目录里 `npm i`（或直接 `dsh plugin add ./package`，它会装依赖） |
+| profile 里没有 `cordis.patch.yml` | 跳过 profile link，继续构建 | 按下面那一步自己加行，或用 `dsh plugin add` |
+
+> 为什么这些是"警告"而不是"报错"：它们以前是**硬失败**——实测在一份空的 `DSH_HOME` 下
+> `node build-router.mjs` 会以 `could not locate @deepseek-ai/schemastery` 中断，**什么都没装上**。
+> 新机器恰恰就是这种状态。
+
 然后在 `$DSH_HOME/profiles/web/cordis.patch.yml` 里加上这一行，并**重启 `dsh web`**：
 
 ```yaml

@@ -158,10 +158,24 @@ function toHostPlain(value) {
  * @param ctx - the row's context.
  * @returns the registered namespace scope.
  */
-function registerSettings(ctx) {
+function registerSettings(ctx, diagnostics) {
   // The base layer is built in this realm as well, so it takes the same
   // conversion: a composition base that fails `isPlainObject` host-side would
   // make the whole namespace unreadable, not just unwritable.
+  //
+  // `typeof z` rather than a plain read: the binding is created by the BUILD, and
+  // a bundle assembled without schemastery available (a clean machine — see
+  // `inlineSchemasteryOrNothing`) has no such binding at all, where naming it
+  // would be a ReferenceError. The fallback is reported as a degradation instead,
+  // because a deployment with no configuration folder needs to know why it cannot
+  // read one.
+  if (typeof z === 'undefined' || typeof z?.object !== 'function') {
+    diagnostics.note('settings namespace', new Error(
+      'schemastery was unavailable when this bundle was built, so the settings-namespace '
+      + 'fallback is disabled; the configuration FILES are the source',
+    ))
+    return undefined
+  }
   return ctx.settings.register(NAMESPACE, buildDocumentSchema(z), {
     base: toHostPlain(starterConfig()),
   })
@@ -1205,7 +1219,7 @@ function mountRouter(ctx) {
   // where there is no filesystem — the dynamic Host sandbox, which has no module
   // system — so the same source still runs in both places.
   const store = createConfigStore(ctx)
-  const settingsScope = store === undefined ? registerSettings(ctx) : undefined
+  const settingsScope = store === undefined ? registerSettings(ctx, diagnostics) : undefined
   const migration = store === undefined
     ? 'no filesystem: using the settings namespace'
     : migrateFromSettingsDocument(ctx, store)

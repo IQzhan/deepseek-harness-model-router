@@ -3,6 +3,25 @@
 本文件记录每个版本的**用户可见变化**。版本号跟 `package/package.json` 里的一致
 （由 `build-router.mjs` 写入，改版本请改构建脚本里的 `version` 字段）。
 
+## 1.0.8
+
+**让"新机器上安装"这条路径真的可用（此前的硬失败已修）。**
+
+- **实测发现**：在一份**空的 DSH_HOME** 下跑 
+ode build-router.mjs，构建以
+  could not locate @deepseek-ai/schemastery **中断，什么都没装上** —— 而新机器恰恰就是这种状态。
+  构建要从**已安装的部署**里内联 schemastery/cosmokit，并 link 部署里的 yaml。
+- 现在按顺序退化，每一步都在输出里说明，不再硬失败：
+  - 找不到 schemastery/cosmokit → 跳过内联继续构建；settings 命名空间**兜底**不可用，并在
+    /health 里记为降级（\where: 'settings namespace'\）——它是"没有配置文件目录"时的兜底，
+    文件才是真正的配置源，所以功能不受影响；
+  - 找不到 yaml → 跳过 link 继续构建，并提示在包目录 
+pm i（或 dsh plugin add，它会装依赖）；
+  - profile 里没有 cordis.patch.yml → 跳过 profile link，提示自己加行或用 \dsh plugin add\。
+- README 的安装章节补上了前置条件与这三种退化的含义。
+- 实测：空的 DSH_HOME 下构建**完整跑完**（产物少约 900 行内联），skill 正确装入该 home；
+  在真实部署下重建则恢复完整产物（内联与 yaml link 都在）。
+
 ## 1.0.7
 
 **修正 1.0.6 的配额语义：跳过 provider，而不是放弃任务。**
