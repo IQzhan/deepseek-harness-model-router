@@ -62,6 +62,7 @@ function E(type, props, ...children) {
 // -- i18n copy
 const NS = 'settings.modelRouter'
 const COPY = {zh: {
+  'save.conflict': '配置已被其他来源修改（当前 revision 与你的草稿不一致），请刷新后重试。',
   'nav.label': '任务路由', 'header.title': '任务路由',
   'header.subtitle': '为子智能体按任务挑选模型。主对话用的始终是你在输入框旁选的那个模型，本插件不碰它。',
   'error.renderFailed.title': '设置页渲染失败',
@@ -204,6 +205,7 @@ const COPY = {zh: {
   'result.unmatched': '判定结果：unmatched（没有命中，也没有可用的默认任务 → 保持继承的模型）',
   'presets.exclusiveLabel': '仅限 {tasks}',
 }, en: {
+  'save.conflict': 'The configuration changed elsewhere (the revision no longer matches your draft). Reload and retry.',
   'nav.label': 'Task Routing', 'header.title': 'Task Routing',
   'header.subtitle': 'Pick models per-task for sub-agents. The main conversation always uses the model you choose beside the input box — this plugin doesn\'t touch it.',
   'error.renderFailed.title': 'Settings Page Render Failed',
@@ -1111,7 +1113,12 @@ function createConfigMirror(doFetch, pollMs = 1500) {
         : { ok: false, problems: [`HTTP ${answer?.status ?? '?'}`] }
       if (result?.ok !== true) {
         const problems = Array.isArray(result?.problems) ? result.problems : [t('saveBar.errorsJoined')]
-        throw new Error(problems.join(t('common.listSeparator')))
+        // The Host answers in ONE language (it has no idea which one this page is
+        // in), so a refusal it can NAME is re-rendered here in the active language.
+        // Everything else is shown verbatim, because it is diagnostic detail.
+        const failure = new Error(problems.join(t('common.listSeparator')))
+        if (typeof result?.code === 'string') failure.code = result.code
+        throw failure
       }
       await load()
     },
@@ -1508,7 +1515,11 @@ function TaskRoutingSection(props) {
       setBaseline(draft)
       setNotice(t('notice.saved').replace('{count}', String(changedFields.length)))
     } catch (failure) {
-      setSaveError(failure instanceof Error ? failure.message : String(failure))
+      // A named refusal is re-rendered in this page's language; anything else is the
+      // Host's own diagnostic text, shown as it came.
+      setSaveError(failure?.code === 'revision-conflict'
+        ? t('save.conflict')
+        : failure instanceof Error ? failure.message : String(failure))
     } finally {
       setSaving(false)
     }

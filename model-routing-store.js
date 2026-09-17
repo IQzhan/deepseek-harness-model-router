@@ -34,7 +34,7 @@ export const FILE_EXT = '.yml'
 
 /** Header written into a file this store creates, so a reader knows the rules. */
 const GLOBAL_HEADER = [
-  '# 任务路由 · 全局配置',
+  '# Task routing · global configuration (comments are in Chinese; the field table is in skills/model-routing/SKILL.md)',
   '#',
   '# 由设置页「任务路由」与手工编辑共同维护，改完即生效（无需重启）。',
   '# 任务本身不在这里，每个任务一个文件：tasks/<任务id>.yml',
@@ -51,7 +51,7 @@ const GLOBAL_HEADER = [
 
 /** Header written into a task file this store creates. */
 const TASK_HEADER = [
-  '# 任务路由 · 单个任务',
+  '# Task routing · one task (comments are in Chinese; the field table is in skills/model-routing/SKILL.md)',
   '#',
   '# 文件名就是任务 id（重命名文件即改 id）。全局配置在 ../global.yml。',
   '#',
@@ -102,7 +102,7 @@ function parseDocument(text, parse) {
   if (text.trim().length === 0) return {}
   const value = parse(text)
   if (value === null || value === undefined) return {}
-  if (!isRecord(value)) throw new Error('配置文件的顶层必须是一个映射（key: value）')
+  if (!isRecord(value)) throw new Error('a configuration file must hold a mapping at the top level (key: value)')
   return value
 }
 
@@ -184,9 +184,9 @@ export function writeConfig(root, config, stringify) {
   for (const task of config.tasks ?? []) {
     const id = task?.id
     if (!isSafeTaskId(id)) {
-      throw new Error(`任务 id ${JSON.stringify(id)} 不能作为文件名（只允许小写字母、数字、连字符）`)
+      throw new Error(`task id ${JSON.stringify(id)} cannot be a file name (lowercase letters, digits and hyphens only)`)
     }
-    if (wanted.has(id)) throw new Error(`任务 id "${id}" 重复`)
+    if (wanted.has(id)) throw new Error(`task id "${id}" appears twice`)
     wanted.add(id)
     const { id: _ignored, ...rest } = task
     writeAtomic(at.task(id), TASK_HEADER + stringify(rest))

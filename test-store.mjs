@@ -129,7 +129,7 @@ try {
   refused = error.message
 }
 check('writing an unsafe id fails loudly instead of escaping the folder',
-  typeof refused === 'string' && refused.includes('不能作为文件名'), true)
+  typeof refused === 'string' && refused.includes('cannot be a file name'), true)
 check('and nothing was created outside the folder', readdirSync(root).sort(),
   [GLOBAL_FILENAME, TASKS_DIRNAME])
 let duplicate
@@ -138,7 +138,7 @@ try {
 } catch (error) {
   duplicate = error.message
 }
-check('two tasks with the same id fail loudly', duplicate.includes('重复'), true)
+check('two tasks with the same id fail loudly', duplicate.includes('appears twice'), true)
 
 // ── the document shape is unchanged for every consumer ──────────────────────
 const document = assemble(back)

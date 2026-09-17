@@ -819,7 +819,7 @@ function delegationPolicy(config, toolName, messageTool) {
       ...tasks.map(task => {
         const description = task.description && task.description.length > 0 ? task.description : task.name
         const keywords = (Array.isArray(task.keywords) ? task.keywords : []).filter(k => k.length > 0)
-        return `- ${task.id}: ${description}${keywords.length === 0 ? '' : `（例如：${keywords.slice(0, 4).join('、')}）`}`
+        return `- ${task.id}: ${description}${keywords.length === 0 ? '' : ` (e.g. ${keywords.slice(0, 4).join(', ')})`}`
       }),
       '',
       // The omission rule is stated as the deployment actually behaves. Claiming
@@ -1291,7 +1291,12 @@ function mountRouter(ctx) {
       // Another writer (or a hand-edit) moved the configuration after this page
       // read it. Refusing is the whole point of the fence: silently overwriting
       // is how an edit disappears.
-      return { ok: false, problems: [`配置已被其他来源修改（当前 revision ${current}，你的草稿基于 ${expectedRevision}），请刷新后重试`], conflict: true }
+      return {
+        ok: false,
+        code: 'revision-conflict',
+        conflict: true,
+        problems: [`the configuration changed elsewhere (revision ${current}, your draft was based on ${expectedRevision}); reload and retry`],
+      }
     }
     const validation = validateConfig(candidate)
     if (!validation.ok) return { ok: false, problems: validation.problems }
