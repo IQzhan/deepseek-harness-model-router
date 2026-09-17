@@ -80,6 +80,7 @@ const stubCtx = {
   slots,
   get: () => undefined,
   effect: (callback) => { callback(); return () => {} },
+  locale: { register: () => {}, bind: () => () => 'X', subscribe: () => () => {}, getSnapshot: () => ({ revision: 1 }) },
 }
 
 new Function('window', 'document', 'fetch', clientSource)(
@@ -96,7 +97,7 @@ const moduleObject = registrations[0].factory((specifier) => {
 })
 check('client module exports apply', typeof moduleObject.apply, 'function')
 check('client module declares its client dependencies', moduleObject.inject,
-  ['slots', 'remote', 'remote.session'])
+  ['slots', 'locale', 'remote', 'remote.session'])
 
 moduleObject.apply(stubCtx)
 check('client registers one settings section', pageRenderers.length, 1)

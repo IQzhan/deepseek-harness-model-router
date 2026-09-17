@@ -65,6 +65,17 @@ const STORE = join(here, 'model-routing-store.js')
 const HOST = join(here, 'dsh-model-router.host.js')
 const CLIENT = join(here, 'dsh-model-router.client.js')
 const OUT_PACKAGE = join(here, 'package')
+/**
+ * The symlink type this platform accepts.
+ *
+ * A directory JUNCTION is Windows-only — on POSIX, `symlink()` rejects that type
+ * with EINVAL, so a hard-coded one makes the whole build Windows-only. `'dir'` is
+ * the POSIX equivalent and is also accepted on Windows (as a real directory
+ * symlink, which needs developer mode or elevation), so Windows keeps junctions and
+ * everything else gets a plain directory link.
+ */
+const LINK_TYPE = process.platform === 'win32' ? 'junction' : 'dir'
+
 const OUT_DYNAMIC = join(here, 'dsh-model-router.dynamic.json')
 const OUT_PLUGIN_BODY = join(here, 'dsh-model-router.plugin-body.js')
 
@@ -210,12 +221,12 @@ async function inlineSchemastery() {
     throw new Error(`build: schemastery export shape changed (got: ${schema.local.join(', ')})`)
   }
   return [
-    `// ─── begin inlined @deepseek-ai/cosmokit (${cosmokitPath}) ───`,
+    `// ─── begin inlined @deepseek-ai/cosmokit (lib/index.js) ───`,
     cosmokit.body.trim(),
     ...cosmokit.aliases.map(pair => `const ${pair.exported} = ${pair.local}`),
     '// ─── end inlined @deepseek-ai/cosmokit ───',
     '',
-    `// ─── begin inlined @deepseek-ai/schemastery (${schemaPath}) ───`,
+    `// ─── begin inlined @deepseek-ai/schemastery (lib/index.mjs) ───`,
     schema.body.trim(),
     '// ─── end inlined @deepseek-ai/schemastery ───',
     '',
@@ -411,7 +422,7 @@ const clientModule = [
 
 const manifest = {
   name: ROUTER_NAME,
-  version: '1.0.8',
+  version: '1.0.9',
   private: true,
   description: 'Task-aware model routing with global load balancing for DeepSeek Harness.',
   type: 'commonjs',
@@ -503,7 +514,7 @@ async function linkIntoProfile() {
     } else if (existsSync(link)) {
       await rm(link, { recursive: true, force: true })
     }
-    await symlink(OUT_PACKAGE, link, 'junction')
+    await symlink(OUT_PACKAGE, link, LINK_TYPE)
     return { link, fresh: true }
   }
   return undefined
@@ -549,7 +560,7 @@ async function linkYamlIntoPackage() {
   } else if (existsSync(link)) {
     await rm(link, { recursive: true, force: true })
   }
-  await symlink(vendored, link, 'junction')
+  await symlink(vendored, link, LINK_TYPE)
   return { link, fresh: true }
 }
 
@@ -585,7 +596,7 @@ async function linkSkillsIntoHome() {
     } else if (existsSync(link)) {
       await rm(link, { recursive: true, force: true })
     }
-    await symlink(from, link, 'junction')
+    await symlink(from, link, LINK_TYPE)
     installed.push({ name, fresh: true })
   }
   return { root, installed }

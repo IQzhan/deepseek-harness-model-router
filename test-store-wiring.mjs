@@ -13,10 +13,10 @@
 // of the same folder, mounted through the same artifact.
 import { createRequire } from 'node:module'
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { cleanup, dshHome, scratch } from './test-support.mjs'
 import { join } from 'node:path'
 
-const HOME = process.env.DSH_HOME ?? join(process.env.USERPROFILE ?? '', '.dsh')
+const HOME = dshHome()
 const require = createRequire(join(HOME, 'profiles', 'web', 'cordis.patch.yml'))
 // The artifact is resolved from THIS file, so the suite runs from a checkout
 // anywhere — a hard-coded path would make it a machine-local script.
@@ -100,7 +100,7 @@ check('and tasks live in their own folder',
 
 // ── phase 2: a temporary COPY, where every write happens ────────────────────
 
-const sandbox = mkdtempSync(join(tmpdir(), 'dsh-model-router-wiring-'))
+const sandbox = scratch('wiring-')
 try {
   cpSync(join(HOME, 'model-routing'), join(sandbox, 'model-routing'), { recursive: true })
   const copy = await mount(join(sandbox, 'settings.yaml'))
@@ -138,7 +138,7 @@ try {
     { config: current.config, revision: current.revision })).body
   check('a current revision is accepted', saved?.ok, true)
 } finally {
-  rmSync(sandbox, { recursive: true, force: true })
+  cleanup(sandbox)
 }
 
 // ── phase 3: the real folder is exactly where it was ────────────────────────

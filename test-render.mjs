@@ -31,6 +31,13 @@ const { renderToString } = await import(pathToFileURL(require.resolve('react-dom
 const clientSource = readFileSync(require.resolve('dsh-model-router/client'), 'utf8')
 
 // ── the document the page renders from ──────────────────────────────────────
+//
+// The task names, descriptions and keywords below are USER CONTENT, not copy:
+// the page must print them verbatim whatever language it is in. They are kept
+// ASCII here so that the bilingual check further down ("the english render
+// carries no Chinese at all") measures the page's own copy and nothing else —
+// a Chinese task name in this fixture would legitimately appear in the English
+// render and make that assertion meaningless.
 function config() {
   return {
     enabled: true,
@@ -38,11 +45,11 @@ function config() {
     classifier: { enabled: true, provider: 'google', model: 'gemini-3.7-flash', maxInputTokens: 4000, timeoutMs: 15000 },
     presets: { 'diy-smart': { enabled: true } },
     tasks: [
-      { id: 'modelling', name: '3D 建模', description: '三维建模、CAD、机械结构设计', enabled: true,
-        keywords: ['建模', 'FreeCAD'], pool: [
+      { id: 'modelling', name: '3D modelling', description: '3D modelling, CAD, mechanical design', enabled: true,
+        keywords: ['modelling', 'FreeCAD'], pool: [
           { provider: 'google', model: 'gemini-3.7-flash', weight: 2 },
           { provider: 'google', model: 'gemini-3.6-flash', weight: 1 }] },
-      { id: 'general', name: '通用子任务', description: '日常子任务', enabled: true, keywords: [],
+      { id: 'general', name: 'General subtasks', description: 'Everyday subtasks', enabled: true, keywords: [],
         pool: [{ provider: 'or', model: 'free', weight: 1 }] },
     ],
   }
@@ -76,6 +83,17 @@ function makeScope(value, status = 'ready', overrides = {}) {
     mutate: async () => {},
   }
 }
+
+/**
+ * The copy dictionaries the page registers, and the language in force.
+ *
+ * The stub below captures what `ctx.locale.register` receives and answers `bind`
+ * from it, so a test can switch the language and render again — which is the only
+ * way to prove the page FOLLOWS the harness language instead of being pinned to
+ * one. (The real plugin resolves through the same call.)
+ */
+const registeredCopy = new Map()
+let activeLanguage = 'zh'
 
 /**
  * Evaluate the bundle and apply it, returning the registered component.
@@ -112,6 +130,15 @@ function load(value, status = 'ready', overrides = {}) {
       register: (options, component) => registered.push({ options, component }),
     },
     effect: (callback) => { callback(); return () => {} },
+    locale: {
+      register: (namespace, dictionary) => {
+        registeredCopy.set(namespace, dictionary)
+        return () => registeredCopy.delete(namespace)
+      },
+      bind: namespace => key => (registeredCopy.get(namespace)?.[activeLanguage] ?? {})[key] ?? key,
+      subscribe: () => () => {},
+      getSnapshot: () => ({ revision: 1, active: activeLanguage }),
+    },
     // The dotted Remote namespaces are SERVICES: `ctx.get('remote.<ns>')` is the
     // sanctioned accessor and answers undefined when absent, while the property
     // read off `ctx.remote` may throw.
@@ -779,6 +806,56 @@ function render(label, ...args) {
     classificationInput('ROOT-MARKER 建模', 'x'.repeat(60000), 500).text.startsWith('ROOT-MARKER'), true)
 }
 
+// ── bilingual copy: the page must FOLLOW the harness language ────────────────
+//
+// Three rules, each one a defect this client actually had:
+//   1. the two dictionaries must carry the SAME keys — a key missing from one
+//      language renders a raw key for those readers;
+//   2. no Chinese may live in CODE outside the dictionary — an earlier version sent
+//      69 strings through COPY.zh, which pins the page to Chinese whatever language
+//      the harness is set to;
+//   3. the RENDERED section must change when the language changes — the decisive
+//      check, and the one a source-level scan cannot make.
+{
+  const source = readFileSync('dsh-model-router.client.js', 'utf8')
+  const sourceLines = source.split('\n')
+  const from = sourceLines.findIndex(line => line.startsWith('const COPY = {'))
+  let to = -1
+  for (let index = from; index < sourceLines.length; index += 1) {
+    if (sourceLines[index].trim() === '}}') { to = index; break }
+  }
+  check('the copy dictionary is one block', [from > 0, to > from], [true, true])
+
+  const dictionary = sourceLines.slice(from, to + 1).join('\n')
+  const enAt = dictionary.indexOf('en: {')
+  const keysOf = text => [...text.matchAll(/'([^']+)'\s*:/g)]
+    .map(match => match[1]).filter(key => key.includes('.')).sort()
+  const zhKeys = keysOf(dictionary.slice(0, enAt))
+  const enKeys = keysOf(dictionary.slice(enAt))
+  check('both languages carry the same keys', enKeys, zhKeys)
+  check('and enough of them to cover the page', zhKeys.length > 50, true)
+
+  // Comments are prose for maintainers; everything else is copy.
+  const offenders = []
+  sourceLines.forEach((line, index) => {
+    if (index >= from && index <= to) return
+    if (!/[\u4e00-\u9fff]/.test(line)) return
+    const trimmed = line.trim()
+    if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) return
+    offenders.push(index + 1)
+  })
+  check('no Chinese in code outside the dictionary', offenders, [])
+
+  // The decisive one: render in English, then in Chinese, off the SAME plugin.
+  activeLanguage = 'en'
+  const english = render('language: english', config(), 'ready', { roster: ['diy-smart'] })
+  activeLanguage = 'zh'
+  const chinese = render('language: chinese', config(), 'ready', { roster: ['diy-smart'] })
+  check('the english render carries no Chinese at all', /[\u4e00-\u9fff]/.test(english.html), false)
+  check('and the same keys resolve to different copy', english.html !== chinese.html, true)
+  check('while the chinese render still is chinese', /[\u4e00-\u9fff]/.test(chinese.html), true)
+}
+
 const failed = results.filter(result => !result.ok)
 for (const result of results) {
   console.log(`${result.ok ? 'PASS' : 'FAIL'}  ${result.label}${result.ok ? '' : `\n      expected ${JSON.stringify(result.expected)}\n      actual   ${JSON.stringify(result.actual)}`}`)
@@ -791,4 +868,8 @@ if (process.argv.includes('--dump')) {
   console.log('starts with:', html.slice(0, 120))
 }
 console.log(`\n${results.length - failed.length}/${results.length} passed`)
-process.exit(failed.length > 0 ? 1 : 0)
+// `process.exitCode`, NOT `process.exit()`: this suite's output is one line per
+// assertion and a hard exit truncates it on a pipe, which silently swallowed the
+// `N/N passed` tally the runner keys on. Nothing here holds the event loop open,
+// so the process ends on its own once stdout has drained.
+process.exitCode = failed.length > 0 ? 1 : 0

@@ -12,6 +12,8 @@ const SUITES = [
   ['test-store-wiring.mjs', '接线：构建产物读真实配置目录'],
   ['test-package.mjs', '包：两个真实加载器 + skill 契约'],
   ['test-render.mjs', '设置页：真实 React 渲染'],
+  ['test-docs.mjs', '文档：双语同步与内容守卫'],
+  ['test-portability.mjs', '可移植性：无绝对路径、无平台专有构造'],
   ['test-deployed-config.mjs', '本机真实配置'],
 ]
 

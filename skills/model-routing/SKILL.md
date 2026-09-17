@@ -17,7 +17,7 @@ $DSH_HOME/model-routing/
   tasks/<任务id>.yml   每个任务一份，文件名就是 id
 ```
 
-`$DSH_HOME` 默认是 `~/.dsh`（Windows 上通常是 `C:\Users\<你>\.dsh`）。
+`$DSH_HOME` 默认是 `~/.dsh`（Windows 上就是当前用户目录下的 `.dsh`）。
 **先读 `global.yml` 和 `tasks/` 目录**，改之前必须知道现在有什么，不要凭印象增删。
 
 配置**没有**写在 `settings.yaml` 里；那里已经没有 `model-routing:` 段，别去改它。

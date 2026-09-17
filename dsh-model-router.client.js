@@ -58,6 +58,317 @@ function E(type, props, ...children) {
   return ReactLib.createElement(type, props, ...children)
 }
 
+
+// -- i18n copy
+const NS = 'settings.modelRouter'
+const COPY = {zh: {
+  'nav.label': '任务路由', 'header.title': '任务路由',
+  'header.subtitle': '为子智能体按任务挑选模型。主对话用的始终是你在输入框旁选的那个模型，本插件不碰它。',
+  'error.renderFailed.title': '设置页渲染失败',
+  'error.renderFailed.detail': '插件本体仍在运行：路由与委派由 Host 半边负责，这个报错只影响本页显示。完整堆栈已打到浏览器控制台。',
+  'error.connectHostFailed.title': '设置页无法连接 Host',
+  'error.connectHostFailed.detail': 'Host 半边仍然正常工作，其他设置页也照常。',
+  'error.mirrorUnavailable.title': '设置镜像不可用',
+  'error.mirrorUnavailable.detail': '这一页需要 settingsScope 提供的设置镜像；它没有出现，所以本页只读不写。',
+  'error.mirrorReadWriteError.title': '设置镜像读写出错',
+  'error.mirrorReadWriteError.detail': '这一页仍然渲染，但读写设置可能不生效。Host 半边与路由本身不受影响。',
+  'error.configUnreadable.title': '配置不可读写',
+  'error.configUnreadable.detail': 'Host 半边还没有注册 model-routing 命名空间，或者当前连接把偏好保存在进程内（memory 模式）。请确认插件已随 profile 加载，然后刷新页面。',
+  'error.saveFailed.title': '保存失败',
+  'error.catalogReadFailed.title': '读取模型目录失败',
+  'status.loading': '载入中…', 'status.active': '生效中', 'status.inactive': '未生效', 'status.readOnly': '只读',
+  'status.healthTitle': '运行状态',
+  'status.healthSubtitle': 'Host 半边自己报告的：能力探测、最近错误、以及它是否已把自己停用。',
+  'status.hostNoResponse': 'Host 半边没有回应',
+  'status.routerOn': '已启用', 'status.routerOff': '未启用',
+  'common.listSeparator': '、',
+  'status.failureEntry': '{id}（{count} 次）',
+  'status.summary': 'Host 半边在线 · 路由{routing} · {tasks} 个任务 · 委派工具已生效 {applied} / 已挂载 {installed} 个会话',
+  'status.breaker': '本插件已自动停用（连续失败 {consecutive} 次，阈值 {threshold}）：{reason}。约 60 秒后自动重试；改动任意设置可立即重置。',
+  'status.presetSummary': '{presets} 个预设已授权 · {tasks} 个任务 · {models} 个可用模型',
+  'status.masterOff': '总开关未开：子智能体不会被路由',
+  'status.noPresets': '还没有授权任何预设：请到「按预设授权」勾选至少一个',
+  'status.missingCapMsg': '以下能力在当前 DSH 版本里没找到，相关功能已自动降级：{missing}。路由本身不依赖它们；委派工具的安装依赖 agents / subagents / tools。',
+  'status.strugglingMsg': '这些 provider 最近请求失败较多，池里含它们会白烧一次重试：{failures}。',
+  'status.errorCount': '最近 {count} 条 Host 错误',
+  'status.refreshHealth': '刷新 Host 状态',
+  'status.disablePlugin': '停用本插件', 'status.enablePlugin': '启用本插件',
+  'status.emergencyClose': '紧急关闭（设置页也打不开时）：编辑 ',
+  'status.emergencyPath': '%DSH_HOME%\\profiles\\web\\cordis.patch.yml',
+  'status.emergencyApply': '——把 ',
+  'status.emergencyToLine': ' 加到这一行：',
+  'status.emergencyValue': 'disabled: true',
+  'status.emergencyAction': '，重启 dsh web 即可。预设文件与其它设置都不会被改动。',
+  'notice.saved': '已保存（{count} 项）',
+  'notice.noUnsaved': '没有未保存的修改', 'notice.unsavedLabel': '未保存：',
+  'btn.cancel': '取消', 'btn.save': '保存', 'btn.saving': '保存中…',
+  'btn.saveTitleWrite': '把本次修改作为一个原子操作写入', 'btn.saveTitleNotWritable': '当前连接不可写',
+  'cascade.title': '判定顺序', 'cascade.subtitle': '每一次子智能体的请求按下面的顺序判定，命中即停。',
+  'cascade.rule1.label': '显式指令 —— ',
+  'cascade.rule1.before': '消息里出现 ', 'cascade.rule1.code': '[task: 任务id]',
+  'cascade.rule1.after': '，直接使用它。',
+  'cascade.rule2.label': '关键词 —— ', 'cascade.rule2.desc': '该任务配置的关键词出现在最近的对话文本里。',
+  'cascade.rule3.label': '语义分类 —— ', 'cascade.rule3.desc': '上面两条都没命中、且分类器已启用时，用一个廉价模型把这段文本归到某个任务的「描述」上。',
+  'cascade.rule4.label': '默认任务 —— ', 'cascade.rule4.desc': '以上都没命中时用它。',
+  'cascade.rule5.label': '都不适用 —— ', 'cascade.rule5.desc': '没有可用的默认任务时，保持子智能体原本继承的模型不变。',
+  'cascade.hintExact': '「都没命中」的准确含义：没有显式指令、没有关键词命中、分类器没有给出候选内的答案。分类器每轮最多调用一次，同一轮的后续步骤复用该结果，所以一次工具调用不会中途换模型；分类器未启用、超时或答非所问时直接落到默认任务——缺席只会退化成默认，不会让这一轮失败。',
+  'cascade.hintFallback': '模型失败时的退路：先在同一任务池内换下一个模型重试；整个池都失败时改用默认任务；默认任务也失败时不再改写路由，这一轮交回调用方自己继续。',
+  'delegation.title': '委派工具',
+  'delegation.subtitle': '本插件自己提供 subagent（派活）与 subagent_message（把修改意见发回同一个子智能体），并屏蔽同作用域内的内置委派工具——预设文件不需要任何改动。',
+  'delegation.allowRedistribution': '允许子智能体再分发（默认关闭）',
+  'delegation.redistributeHint': '关闭时（推荐）：子智能体是执行者，只干被派给它的活，不再往下派；需要拆分时它把拆分结果交回主智能体。开启时子智能体可以再往下派一层。无论开关如何，子智能体都不会拿到委派工具本身，层级由授权与作用域决定，不靠提示词约束。',
+  'delegation.sustainableHint': '子智能体默认可持续：交付后仍然存活，主智能体用 subagent_message 把修改意见或下一步发回同一个子智能体，不必另开一个——任务归属因此始终清晰。若当前 DSH 的 spawn 后端不支持可持续子会话，插件会自动退回一次性委派，并把工具描述改成"每次委派都是一个新子智能体"，不会承诺做不到的事。',
+  'masterSwitch.title': '总开关与默认任务',
+  'masterSwitch.subtitle': '配置写在 Host 的设置文档里，重启后依然有效，与插件是否出现在左下角无关。',
+  'masterSwitch.enableLabel': '启用任务路由', 'masterSwitch.enableHint': '只影响子智能体；关闭时任何会话的模型都不会被改动',
+  'masterSwitch.defaultTaskLabel': '默认任务',
+  'masterSwitch.noDefaultOption': '不设默认（没命中就不路由）',
+  'masterSwitch.noDefaultMsg': '当前没有默认任务：只有明确命中的子智能体才会被路由，其余保持继承的模型。',
+  'masterSwitch.defaultUsage': '未命中时使用「{taskId}」。该任务被停用或模型池为空时，等同于没有默认任务。',
+  'classifier.title': '语义分类器',
+  'classifier.subtitle': '只在前两条规则都没命中时才被问到，用于覆盖关键词写不出来的任务。',
+  'classifier.enableLabel': '启用分类器', 'classifier.modelLabel': '分类模型',
+  'classifier.inputLimitLabel': '每次判定的输入上限（tokens）',
+  'classifier.timeoutLabel': '超时（ms）',
+  'classifier.hint': '分类器只读到：子智能体的最初指令 + 最近几条消息，再按这个上限截断——所以无论对话多长，输入都不会超过它。判定本身很短（候选任务每个一行 + 一句回复），上限给 2000～4000 就够；这里填的是估算 token 数，中英混排按各自密度折算。',
+  'taskPool.title': '任务与模型池',
+  'taskPool.subtitle': '「描述」是分类器唯一读到的内容，写清这个任务是做什么的。池内多个模型按权重全局轮转，不区分会话。',
+  'taskPool.noTasks': '还没有任务。点下面的「新建任务」开始。',
+  'task.idPlaceholder': '任务 id：小写连字符。可在消息里用 [task: id] 直接指定',
+  'task.badgeDefault': '默认', 'task.badgeDisabled': '已停用',
+  'task.makeDefault': '设为默认', 'task.cancelDefault': '取消默认', 'task.delete': '删除',
+  'task.nameLabel': '显示名', 'task.namePlaceholder': '例如：3D 建模',
+  'task.keywordsLabel': '关键词（逗号分隔，可选）', 'task.keywordsPlaceholder': '命中即直接路由，不必等分类器',
+  'task.descLabel': '描述（分类器读这段文字做判断）',
+  'task.descPlaceholder': '例如：三维建模、CAD、机械结构设计、导出 STL/STEP、3D 打印件设计',
+  'task.onLabel': '启用',
+  'childProfile.title': '子智能体档案', 'childProfile.subtitle': '不设置就完全继承父预设',
+  'childProfile.promptLabel': '提示词（留空 = 继承父预设）',
+  'childProfile.promptPlaceholder': '这个任务的子智能体只读这一段系统提示词。留空则完全继承父预设。',
+  'childProfile.fillTemplate': '填入通用执行者模板', 'childProfile.isTemplateBadge': '已是模板',
+  'childProfile.clearBtn': '清空（回到继承）',
+  'childProfile.reasoningEffortLabel': '推理强度', 'childProfile.reasoningDefault': '跟随路由默认（默认）',
+  'childProfile.toolFilterLabel': '限制子智能体可用工具',
+  'childProfile.toolFilterWarn': '读不到工具清单：请确认 Host 半边已重启',
+  'childProfile.toolFilterHint': '不勾选 = 继承父预设的全部工具',
+  'childProfile.hint': '子智能体没有自己的预设——它继承父预设。这两项是让它专用于本任务的办法：提示词会整体替换继承来的那段（作用域同名遮蔽 + complete），工具只留你勾的。无论怎么设置，子智能体都拿不到委派工具，能否再细分只由「委派工具」开关决定。',
+  'pool.title': '模型池',
+  'pool.modelCount': '{count} 个模型 · 权重合计 {total}',
+  'pool.emptyBadge': '空池不会路由',
+  'pool.weightHint': '权重是相对比例：2 与 1 表示它承担三分之二的流量；轮转是全局的，不区分会话',
+  'pool.addModel': '+ 添加模型',
+  'newTaskButton': '+ 新建任务',
+  'authPreset.title': '按预设授权',
+  'authPreset.subtitle': '任务库和模型池是全局的；这里只决定哪些预设允许使用路由。未勾选的预设完全不受影响。',
+  'authPreset.emptyRoster': '预设清单为空：这台机器上一个可用预设都没有。先在「预设」页建一个，或确认 agent-presets 已配置。',
+  'authPreset.rosterError': '读不到预设清单：{error}。Host 半边仍然正常工作，其他设置也照常保存。',
+  'authPreset.exclusiveNone': '（无任务）',
+  'authPreset.toggleAll': '改为全部任务',
+  'authPreset.exclusiveSelect': '仅限指定任务',
+  'preview.title': '路由预览',
+  'preview.subtitle': '输入一句话，看看一个子智能体接到它时会落到哪个任务。纯本地判定，不发送任何请求。',
+  'preview.noGrantOption': '（未授权预设）',
+  'preview.placeholder': '例如：帮我用 FreeCAD 建一个齿轮',
+  'catalog.title': '模型目录',
+  'catalog.subtitle': '与输入框旁的模型选择器同源：Host 通过各 provider 适配器解析出的可用模型。池与分类器的选项都取自这里。',
+  'catalog.loading': '读取中…',
+  'catalog.modelCount': '可用模型 {count} 个，覆盖 {providers} 个 provider。',
+  'catalog.refreshBtn': '刷新模型列表',
+  'catalog.showAll': '查看全部可用模型',
+  'routeProblem.corrupt': '这条路由此前版本的 bug 写坏了（model 是字符串 "undefined"）——请重新选择模型',
+  'routeProblem.missing': '模型目录里找不到这条路由（{route}）——provider 可能已被移除，或模型已下架',
+  'modelPicker.emptyLabel': '— 选择模型 —', 'modelPicker.emptyTitle': '选择一个模型',
+  'modelOption.format': '{name}（{id}）',
+  'weightTitle': '权重：相对比例。2 表示它承担的流量是权重 1 的两倍',
+  'removeModelTitle': '移除这个模型',
+  'fetchRoute.error': 'modelCatalog 远程接口不可用',
+  'fetchRoute.readFailed': '模型目录读取失败',
+  'fetchRoute.failDetail': '目录读取失败',
+  'fetchPreset.error': 'agentPresets 远程接口不可用',
+  'fetchPreset.readFailed': '预设清单读取失败',
+  'fetchPreset.formatterror': '预设清单格式无法识别',
+  'saveBar.errorsJoined': '保存失败',
+  'healthConn.error': 'Host 状态接口返回 {code}：Host 半边可能没有挂载或已崩溃',
+  'healthConn.noFetch': '当前环境没有 fetch，无法读取 Host 状态',
+  'persona.template.line1': '你是被委派的执行者，只负责交付给你的那一个闭包任务。',
+  'persona.template.line2': '只使用你手上的工具，在该任务范围内工作；不要越过它去处理主智能体的事务。',
+  'persona.template.line3': '任务说明就是你收到的全部背景——需要外部信息就自己取，取不到就说明缺什么，不要猜。',
+  'persona.template.line4': '交付时给出结论、依据与已验证的范围；未验证的部分明确标注。',
+  'defaultTaskName': '新任务',
+  'result.disabled': '判定结果：disabled（总开关未开）',
+  'result.presetNotGranted': '判定结果：preset（该预设未授权，不会路由）',
+  'result.explicitDirective': '判定结果：deterministic · 任务：{id}（来自 [task: …] 指令）',
+  'result.keywordHit': '判定结果：deterministic · 任务：{id}（关键词命中）',
+  'result.defaultWithClassifier': '判定结果：语义分类 → default · 任务：{id}（分类器会先被问一次；答案不在候选内时落到这里）',
+  'result.defaultWithoutClassifier': '判定结果：default · 任务：{id}（分类器未启用）',
+  'result.unmatched': '判定结果：unmatched（没有命中，也没有可用的默认任务 → 保持继承的模型）',
+  'presets.exclusiveLabel': '仅限 {tasks}',
+}, en: {
+  'nav.label': 'Task Routing', 'header.title': 'Task Routing',
+  'header.subtitle': 'Pick models per-task for sub-agents. The main conversation always uses the model you choose beside the input box — this plugin doesn\'t touch it.',
+  'error.renderFailed.title': 'Settings Page Render Failed',
+  'error.renderFailed.detail': 'The plugin itself still runs: routing and delegation are handled by the Host side. This error only affects this page\'s display. Full stack traces are logged to the browser console.',
+  'error.connectHostFailed.title': 'Cannot Connect to Host',
+  'error.connectHostFailed.detail': 'The Host side is still working normally; other settings pages continue to function.',
+  'error.mirrorUnavailable.title': 'Settings Mirror Unavailable',
+  'error.mirrorUnavailable.detail': 'This page requires a settings mirror from settingsScope; since it is not available, the page is read-only.',
+  'error.mirrorReadWriteError.title': 'Settings Read/Write Error',
+  'error.mirrorReadWriteError.detail': 'This page still renders, but read/write operations may not take effect. The Host side and routing itself are unaffected.',
+  'error.configUnreadable.title': 'Configuration Unreadable',
+  'error.configUnreadable.detail': 'The Host side has not registered the model-routing namespace yet, or the current connection persists preferences in-process (memory mode). Confirm the plugin loads with your profile, then refresh the page.',
+  'error.saveFailed.title': 'Save Failed',
+  'error.catalogReadFailed.title': 'Failed to Read Model Catalog',
+  'status.loading': 'Loading…', 'status.active': 'Active', 'status.inactive': 'Inactive', 'status.readOnly': 'Read-only',
+  'status.healthTitle': 'Runtime Status',
+  'status.healthSubtitle': 'Reported by the Host side itself: capability probes, recent errors, and whether it disabled itself.',
+  'status.hostNoResponse': 'Host side not responding',
+  'status.routerOn': 'enabled', 'status.routerOff': 'disabled',
+  'common.listSeparator': ', ',
+  'status.failureEntry': '{id} ({count} failures)',
+  'status.summary': 'Host side online · routing {routing} · {tasks} tasks · delegation active in {applied} of {installed} sessions',
+  'status.breaker': 'This plugin auto-disabled itself ({consecutive} consecutive failures, threshold {threshold}): {reason}. It retries in about 60 seconds; any settings change resets the count immediately.',
+  'status.presetSummary': '{presets} presets authorized · {tasks} tasks · {models} models available',
+  'status.masterOff': 'The master switch is off: sub-agents will not be routed',
+  'status.noPresets': 'No preset is authorized yet: tick at least one under "Presets Authorization"',
+  'status.missingCapMsg': 'The following capabilities were not found in this DSH version; related features have been automatically downgraded: {missing}. Routing itself does not depend on them; delegation tool installation depends on agents / subagents / tools.',
+  'status.strugglingMsg': 'These providers have had many recent failures; pools containing them waste retries: {failures}.',
+  'status.errorCount': 'Recent {count} Host errors',
+  'status.refreshHealth': 'Refresh Host Status',
+  'status.disablePlugin': 'Disable Plugin', 'status.enablePlugin': 'Enable Plugin',
+  'status.emergencyClose': 'Emergency disable (when even this settings page will not open): edit ',
+  'status.emergencyPath': '%DSH_HOME%\\profiles\\web\\cordis.patch.yml',
+  'status.emergencyApply': ' — add ',
+  'status.emergencyToLine': ' to the line for ',
+  'status.emergencyValue': 'disabled: true',
+  'status.emergencyAction': ', then restart dsh web. Preset files and other settings are untouched.',
+  'notice.saved': 'Saved ({count} items)',
+  'notice.noUnsaved': 'No unsaved changes', 'notice.unsavedLabel': 'Unsaved: ',
+  'btn.cancel': 'Cancel', 'btn.save': 'Save', 'btn.saving': 'Saving…',
+  'btn.saveTitleWrite': 'Write this change as an atomic operation', 'btn.saveTitleNotWritable': 'Current connection is not writable',
+  'cascade.title': 'Evaluation Order', 'cascade.subtitle': 'Each sub-agent request is evaluated in order below; the first hit wins.',
+  'cascade.rule1.label': 'Explicit directive — ',
+  'cascade.rule1.before': 'A message containing ', 'cascade.rule1.code': '[task: task-id]',
+  'cascade.rule1.after': ' uses it directly.',
+  'cascade.rule2.label': 'Keywords — ', 'cascade.rule2.desc': 'Keywords configured for the task appear in the recent conversation text.',
+  'cascade.rule3.label': 'Semantic classification — ', 'cascade.rule3.desc': 'Neither of the above matched and the classifier is enabled: a cheap model classifies this text into a task description.',
+  'cascade.rule4.label': 'Default task — ', 'cascade.rule4.desc': 'Used when none of the above matches.',
+  'cascade.rule5.label': 'None applicable — ', 'cascade.rule5.desc': 'When no default task is available, the sub-agent keeps its inherited model unchanged.',
+  'cascade.hintExact': 'Meaning of "no match": no explicit directive, no keyword hit, and the classifier didn\'t produce a candidate within scope. The classifier is called at most once per round; subsequent steps reuse the result, so a single tool invocation won\'t switch models mid-flight. If the classifier is disabled, times out, or answers off-topic, control falls through to the default — absence degrades to default rather than failing the round.',
+  'cascade.hintFallback': 'Model failure fallback: first retry with the next model in the same task pool; if the entire pool fails, fall back to the default task; if the default task also fails, stop rewriting the route and let the caller continue for this round.',
+  'delegation.title': 'Delegation Tools',
+  'delegation.subtitle': 'This plugin provides its own subagent (dispatch) and subagent_message (send feedback back to the sub-agent), and shadows the built-in delegation tools within the same scope — preset files need no changes.',
+  'delegation.allowRedistribution': 'Allow sub-agents to redistribute work (default off)',
+  'delegation.redistributeHint': 'When off (recommended): sub-agents are executors who do only what they\'re dispatched to and don\'t dispatch further; they return decomposition results to the main agent. When on, sub-agents may dispatch one level deeper. Regardless, sub-agents never receive the delegation tool itself; hierarchy is determined by authorization and scope, not prompt constraints.',
+  'delegation.sustainableHint': 'Sub-agents are persistent by default: they remain alive after delivery, and the main agent sends modification notes or next steps back to the same sub-agent via subagent_message instead of opening a new one — keeping task ownership clear throughout. If the current DSH\'s spawn backend doesn\'t support persistent sub-sessions, the plugin automatically falls back to one-shot delegation and changes the tool description to "each dispatch is a new sub-agent", without promising what cannot be delivered.',
+  'masterSwitch.title': 'Master Switch & Default Task',
+  'masterSwitch.subtitle': 'Configuration lives in the Host settings document and survives restarts, independent of whether the plugin appears in the bottom-left corner.',
+  'masterSwitch.enableLabel': 'Enable task routing', 'masterSwitch.enableHint': 'Affects sub-agents only; when off, no session model will be changed',
+  'masterSwitch.defaultTaskLabel': 'Default task',
+  'masterSwitch.noDefaultOption': 'No default (don\'t route when unmatched)',
+  'masterSwitch.noDefaultMsg': 'No default task set: only explicitly-matched sub-agents will be routed; others keep their inherited model.',
+  'masterSwitch.defaultUsage': 'On mismatch, use "{taskId}". When the task is disabled or its model pool is empty, it acts as though no default task exists.',
+  'classifier.title': 'Semantic Classifier',
+  'classifier.subtitle': 'Only consulted when neither of the first two rules matched, to cover tasks that keywords alone cannot express.',
+  'classifier.enableLabel': 'Enable classifier', 'classifier.modelLabel': 'Classification model',
+  'classifier.inputLimitLabel': 'Input limit per evaluation (tokens)',
+  'classifier.timeoutLabel': 'Timeout (ms)',
+  'classifier.hint': 'The classifier sees only: the sub-agent\'s initial instruction plus the most recent messages, truncated to this limit. No matter how long the conversation is, input won\'t exceed it. Evaluation itself is brief (one line per candidate task + a reply); a limit of 2000–4000 is sufficient. Enter estimated token count; mixed-language density is converted accordingly.',
+  'taskPool.title': 'Tasks & Model Pool',
+  'taskPool.subtitle': 'The description is the only content the classifier reads — write clearly what the task does. Models in the pool rotate globally by weight, regardless of session.',
+  'taskPool.noTasks': 'No tasks yet. Click "New Task" below to get started.',
+  'task.idPlaceholder': 'Task id: lowercase hyphens. Use [task: id] in messages to specify directly.',
+  'task.badgeDefault': 'Default', 'task.badgeDisabled': 'Disabled',
+  'task.makeDefault': 'Set as default', 'task.cancelDefault': 'Cancel default', 'task.delete': 'Delete',
+  'task.nameLabel': 'Display name', 'task.namePlaceholder': 'e.g., 3D Modeling',
+  'task.keywordsLabel': 'Keywords (comma-separated, optional)', 'task.keywordsPlaceholder': 'Directly routes on match, no need to wait for classifier',
+  'task.descLabel': 'Description (classifier reads this for decisions)',
+  'task.descPlaceholder': 'e.g., 3D modeling, CAD, mechanical structure design, STL/STEP export, 3D printed part design',
+  'task.onLabel': 'Enable',
+  'childProfile.title': 'Sub-agent Profile', 'childProfile.subtitle': 'If unset, fully inherits from the parent preset',
+  'childProfile.promptLabel': 'Prompt (leave blank = inherit parent preset)',
+  'childProfile.promptPlaceholder': 'This task\'s sub-agents read only this system prompt. Leave blank to fully inherit the parent preset.',
+  'childProfile.fillTemplate': 'Fill generic executor template', 'childProfile.isTemplateBadge': 'Already template',
+  'childProfile.clearBtn': 'Clear (back to inherit)',
+  'childProfile.reasoningEffortLabel': 'Reasoning effort', 'childProfile.reasoningDefault': 'Follow route default (default)',
+  'childProfile.toolFilterLabel': 'Limit sub-agent available tools',
+  'childProfile.toolFilterWarn': 'Cannot read tool list: please confirm the Host side has restarted',
+  'childProfile.toolFilterHint': 'Unchecked = inherit all tools from parent preset',
+  'childProfile.hint': 'Sub-agents have no separate presets — they inherit the parent. These two controls let you specialize them for this task: the prompt replaces the inherited one entirely (scope shadowing + complete), and only the tools you check remain. No matter the setting, sub-agents never receive the delegation tool; further subdivision depends solely on the "Delegation Tools" toggle.',
+  'pool.title': 'Model Pool',
+  'pool.modelCount': '{count} models · Total weight {total}',
+  'pool.emptyBadge': 'Empty pool won\'t route',
+  'pool.weightHint': 'Weights are relative ratios: 2 vs 1 means it takes two-thirds of the traffic; rotation is global, regardless of session.',
+  'pool.addModel': '+ Add Model',
+  'newTaskButton': '+ New Task',
+  'authPreset.title': 'Presets Authorization',
+  'authPreset.subtitle': 'The task library and model pool are global; here you decide which presets may use routing. Unchecked presets are completely unaffected.',
+  'authPreset.emptyRoster': 'Preset roster is empty: no usable presets exist on this machine. Create one on the "Presets" page first, or confirm agent-presets is configured.',
+  'authPreset.rosterError': 'Cannot read preset roster: {error}. The Host side remains healthy; other settings save normally.',
+  'authPreset.exclusiveNone': '(no tasks)',
+  'authPreset.toggleAll': 'Switch to all tasks',
+  'authPreset.exclusiveSelect': 'Assign specific tasks only',
+  'preview.title': 'Routing Preview',
+  'preview.subtitle': 'Enter a sentence to see which task a sub-agent would land on. Pure local evaluation — no requests sent.',
+  'preview.noGrantOption': '(no authorized preset)',
+  'preview.placeholder': 'e.g., Help me build a gear with FreeCAD',
+  'catalog.title': 'Model Catalog',
+  'catalog.subtitle': 'Same source as the model picker beside the input: available models resolved by the Host through each provider adapter. Pool and classifier options all come from here.',
+  'catalog.loading': 'Reading…',
+  'catalog.modelCount': '{count} available models covering {providers} providers.',
+  'catalog.refreshBtn': 'Refresh Model List',
+  'catalog.showAll': 'View all available models',
+  'routeProblem.corrupt': 'This route was corrupted by a bug in a previous version (model became the string "undefined") — please reselect the model',
+  'routeProblem.missing': 'This route is missing from the model catalog ({route}) — the provider may have been removed, or the model has been delisted',
+  'modelPicker.emptyLabel': '— Select Model —', 'modelPicker.emptyTitle': 'Select a model',
+  'modelOption.format': '{name} ({id})',
+  'weightTitle': 'Weight: relative ratio. 2 means it handles twice the traffic of weight 1.',
+  'removeModelTitle': 'Remove this model',
+  'fetchRoute.error': 'modelCatalog remote interface unavailable',
+  'fetchRoute.readFailed': 'Model catalog read failed',
+  'fetchRoute.failDetail': 'Catalog read failed',
+  'fetchPreset.error': 'agentPresets remote interface unavailable',
+  'fetchPreset.readFailed': 'Preset roster read failed',
+  'fetchPreset.formatterror': 'Preset roster format unrecognized',
+  'saveBar.errorsJoined': 'Save failed',
+  'healthConn.error': 'Host status endpoint returned {code}: Host side may not be mounted or has crashed',
+  'healthConn.noFetch': 'Current environment has no fetch; unable to read Host status',
+  'persona.template.line1': 'You are a delegated executor, responsible only for delivering the one closed task given to you.',
+  'persona.template.line2': 'Use only the tools at hand, work within this task; do not cross over to handle the main agent\'s matters.',
+  'persona.template.line3': 'The task instructions are all the background you receive — if you need external information, fetch it yourself; if you can\'t, say what\'s missing. Don\'t guess.',
+  'persona.template.line4': 'Deliver conclusions, evidence, and verified scope; unverified parts should be clearly labeled.',
+  'defaultTaskName': 'New Task',
+  'result.disabled': 'Result: disabled (master switch not on)',
+  'result.presetNotGranted': 'Result: preset (this preset not granted, will not route)',
+  'result.explicitDirective': 'Result: deterministic · Task: {id} (from [task: …] directive)',
+  'result.keywordHit': 'Result: deterministic · Task: {id} (keyword hit)',
+  'result.defaultWithClassifier': 'Result: semantic classification → default · Task: {id} (classifier asked first; answer not in candidates falls here)',
+  'result.defaultWithoutClassifier': 'Result: default · Task: {id} (classifier not enabled)',
+  'result.unmatched': 'Result: unmatched (nothing matched, and no default task available → keep inherited model)',
+  'presets.exclusiveLabel': 'Limited to {tasks}',
+}}
+/**
+ * The copy bridge.
+ *
+ * `t` is resolved at CALL time and points at the harness's own translate function
+ * once `apply` has run, which is what makes a language switch take effect on the
+ * next render instead of at plugin load. The defaults keep a component renderable
+ * before that wiring exists (and in a test): Chinese, because that is the language
+ * every key is authored in.
+ */
+const localeBridge = { t: key => COPY.zh[key] ?? key, subscribe: () => () => {}, revision: 0 }
+
+/** The active language's copy for one key. */
+function t(key) {
+  return localeBridge.t(key)
+}
+
+/** Component-side hook: re-renders this subtree when the harness language changes. */
+function useCopy() {
+  const [, force] = ReactLib.useState(0)
+  ReactLib.useEffect(() => localeBridge.subscribe(() => force(n => n + 1)), [])
+  return localeBridge.t
+}
+
 /** Settings namespace the Host half registers. */
 const NAMESPACE = 'model-routing'
 
@@ -319,11 +630,10 @@ function routeProblem(candidate, knownRoutes) {
   const providerOk = isRouteId(candidate?.provider)
   const modelOk = isRouteId(candidate?.model)
   if (!providerOk || !modelOk) {
-    return '这条路由此前版本的 bug 写坏了（model 是字符串 "undefined"）——请重新选择模型'
+    return t('routeProblem.corrupt')
   }
   if (!knownRoutes.has(routeKey(candidate.provider, candidate.model))) {
-    return `模型目录里找不到这条路由（${candidate.provider}/${candidate.model}）`
-      + '——provider 可能已被移除，或模型已下架'
+    return t('routeProblem.missing').replace('{route}', `${candidate.provider}/${candidate.model}`)
   }
   return undefined
 }
@@ -338,13 +648,13 @@ function ModelRow(props) {
     E('select', {
       value,
       disabled: disabled === true,
-      title: value === '' ? '选择一个模型' : `${candidate.provider}/${candidate.model}`,
+      title: value === '' ? t('modelPicker.emptyTitle') : `${candidate.provider}/${candidate.model}`,
       onChange: event => {
         if (event.target.value === '') return
         onChange({ ...parseRouteKey(event.target.value), weight: candidate.weight ?? 1 })
       },
     },
-      E('option', { value: '' }, '— 选择模型 —'),
+      E('option', { value: '' }, t('modelPicker.emptyLabel')), 
       ...modelOptions(groups)),
     E('div', { className: 'dsh-mr-weight' },
       E('input', {
@@ -353,7 +663,7 @@ function ModelRow(props) {
         step: 1,
         disabled: disabled === true,
         value: String(candidate.weight ?? 1),
-        title: '权重：相对比例。2 表示它承担的流量是权重 1 的两倍',
+        title: t('weightTitle'),
         onChange: event => onChange({
           ...candidate,
           weight: Math.max(1, Math.trunc(Number(event.target.value)) || 1),
@@ -363,7 +673,7 @@ function ModelRow(props) {
       type: 'button',
       className: 'dsh-mr-icon dsh-mr-danger',
       disabled: disabled === true,
-      title: '移除这个模型',
+      title: t('removeModelTitle'),
       onClick: () => onRemove(index),
     }, '\u00d7'),
     problem === undefined ? null : E('div', { className: 'dsh-mr-missing' }, problem))
@@ -377,9 +687,9 @@ function ModelRow(props) {
  * cannot run is the classifier, and it says so.
  */
 function describePreview(config, text, presetId) {
-  if (config.enabled !== true) return '判定结果：disabled（总开关未开）'
+  if (config.enabled !== true) return t('result.disabled')
   const grant = presetId === '' ? undefined : config.presets[presetId]
-  if (grant === undefined) return '判定结果：preset（该预设未授权，不会路由）'
+  if (grant === undefined) return t('result.presetNotGranted')
   const allowed = (task) => {
     if (task.enabled === false) return false
     if (!Array.isArray(task.pool) || task.pool.length === 0) return false
@@ -391,19 +701,19 @@ function describePreview(config, text, presetId) {
   const explicit = directive === null
     ? undefined
     : candidates.find(task => task.id === directive[1].toLowerCase())
-  if (explicit !== undefined) return `判定结果：deterministic · 任务：${explicit.id}（来自 [task: …] 指令）`
+  if (explicit !== undefined) return t('result.explicitDirective').replace('{id}', explicit.id)
   const keyword = candidates.find(task => Array.isArray(task.keywords)
     && task.keywords.some(word => typeof word === 'string' && word.length > 0 && text.includes(word)))
-  if (keyword !== undefined) return `判定结果：deterministic · 任务：${keyword.id}（关键词命中）`
+  if (keyword !== undefined) return t('result.keywordHit').replace('{id}', keyword.id)
   const fallback = config.defaultTaskId === ''
     ? undefined
     : candidates.find(task => task.id === config.defaultTaskId)
   if (fallback !== undefined) {
     const classifier = at(config, ['classifier', 'enabled'], false) === true
-    return `判定结果：${classifier ? '语义分类 → ' : ''}default · 任务：${fallback.id}`
-      + (classifier ? '（分类器会先被问一次；答案不在候选内时落到这里）' : '（分类器未启用）')
+    return (classifier ? t('result.defaultWithClassifier') : t('result.defaultWithoutClassifier'))
+      .replace('{id}', fallback.id)
   }
-  return '判定结果：unmatched（没有命中，也没有可用的默认任务 → 保持继承的模型）'
+  return t('result.unmatched')
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -460,7 +770,9 @@ function modelOptionLabel(model) {
   const name = typeof model?.name === 'string' && model.name.length > 0 && model.name !== id
     ? model.name
     : undefined
-  return name === undefined ? id : `${name}（${id}）`
+  return name === undefined
+    ? id
+    : t('modelOption.format').replace('{name}', name).replace('{id}', id)
 }
 
 /**
@@ -498,15 +810,15 @@ function modelOptions(groups) {
 async function fetchRoutes(sessionFace) {
   try {
     const response = await sessionFace?.modelCatalog?.()
-    if (response === undefined) return { routes: [], error: 'modelCatalog 远程接口不可用' }
+    if (response === undefined) return { routes: [], error: t('fetchRoute.error') }
     if (response.ok !== true) {
       const code = response.error?.code ?? ''
-      const message = response.error?.message ?? '模型目录读取失败'
+      const message = response.error?.message ?? t('fetchRoute.readFailed')
       return { routes: [], error: code.length > 0 ? `${code}: ${message}` : message }
     }
     const failures = (response.value?.failures ?? [])
-      .map(failure => `${failure?.name || failure?.id}: ${failure?.message ?? '目录读取失败'}`)
-    return { routes: catalogFromModelCatalog(response.value), error: failures.join('；') }
+      .map(failure => `${failure?.name || failure?.id}: ${failure?.message ?? t('fetchRoute.failDetail')}`)
+    return { routes: catalogFromModelCatalog(response.value), error: failures.join(t('common.listSeparator')) }
   } catch (failure) {
     return { routes: [], error: failure instanceof Error ? failure.message : String(failure) }
   }
@@ -528,19 +840,19 @@ async function fetchRoutes(sessionFace) {
  */
 async function fetchPresets(face) {
   if (face === undefined || typeof face.list !== 'function') {
-    return { ids: [], error: 'agentPresets 远程接口不可用' }
+    return { ids: [], error: t('fetchPreset.error') }
   }
   try {
     const response = await face.list()
     if (response?.ok !== true) {
       const code = response?.error?.code ?? ''
-      const message = response?.error?.message ?? '预设清单读取失败'
+      const message = response?.error?.message ?? t('fetchPreset.readFailed')
       return { ids: [], error: code.length > 0 ? `${code}: ${message}` : message }
     }
     // `list()` answers with the roster entries; tolerate a wrapper so a shape
     // change cannot silently empty the grant list again.
     const listed = Array.isArray(response.value) ? response.value : response.value?.presets
-    if (!Array.isArray(listed)) return { ids: [], error: '预设清单格式无法识别' }
+    if (!Array.isArray(listed)) return { ids: [], error: t('fetchPreset.formatterror') }
     return {
       ids: listed
         .filter(preset => typeof preset?.id === 'string' && preset.broken === undefined)
@@ -589,12 +901,20 @@ function normalizeTask(task) {
  * the task is — the task's own `prompt` carries that. The operator can always
  * switch to 自定义 and write their own.
  */
-const EXECUTOR_PERSONA = [
-  '你是被委派的执行者，只负责交付给你的那一个闭包任务。',
-  '只使用你手上的工具，在该任务范围内工作；不要越过它去处理主智能体的事务。',
-  '任务说明就是你收到的全部背景——需要外部信息就自己取，取不到就说明缺什么，不要猜。',
-  '交付时给出结论、依据与已验证的范围；未验证的部分明确标注。',
-].join('\n')
+/**
+ * The executor template, resolved at CALL time so a language switch reaches it.
+ *
+ * It is a function rather than a constant because the text it fills is copy:
+ * freezing it at module load would hand a Chinese template to an English reader.
+ */
+function executorPersona() {
+  return [
+    t('persona.template.line1'),
+    t('persona.template.line2'),
+    t('persona.template.line3'),
+    t('persona.template.line4'),
+  ].join('\n')
+}
 
 /**
  * What a freshly switched-on tool filter starts with: the ordinary work tools
@@ -790,8 +1110,8 @@ function createConfigMirror(doFetch, pollMs = 1500) {
         ? await answer.json()
         : { ok: false, problems: [`HTTP ${answer?.status ?? '?'}`] }
       if (result?.ok !== true) {
-        const problems = Array.isArray(result?.problems) ? result.problems : ['保存失败']
-        throw new Error(problems.join('；'))
+        const problems = Array.isArray(result?.problems) ? result.problems : [t('saveBar.errorsJoined')]
+        throw new Error(problems.join(t('common.listSeparator')))
       }
       await load()
     },
@@ -853,13 +1173,12 @@ function sectionBoundary() {  if (SectionBoundaryClass !== undefined) return Sec
       if (this.state.error === null) return this.props.children
       const error = this.state.error
       return E('div', { className: 'dsh-mr' },
-        E('h2', null, '任务路由'),
-        E(Card, { bad: true, title: '设置页渲染失败' },
+        E('h2', null, t('header.title')),
+        E(Card, { bad: true, title: t('error.renderFailed.title') },
           E('div', { className: 'dsh-mr-error' },
             error instanceof Error ? error.message : String(error)),
           E('div', { className: 'dsh-mr-hint' },
-            '插件本体仍在运行：路由与委派由 Host 半边负责，这个报错只影响本页显示。'
-            + '完整堆栈已打到浏览器控制台。')))
+            t('error.renderFailed.detail'))))
     }
   }
   return SectionBoundaryClass
@@ -902,7 +1221,7 @@ function optionalFace(ctx, name) {
  */
 async function fetchHealth(doFetch) {
   if (typeof doFetch !== 'function') {
-    return { status: -1, health: null, error: '当前环境没有 fetch，无法读取 Host 状态' }
+    return { status: -1, health: null, error: t('healthConn.noFetch') }
   }
   try {
     const response = await doFetch('/api/dsh-model-router/health', {
@@ -913,7 +1232,7 @@ async function fetchHealth(doFetch) {
       return {
         status: response?.status ?? 0,
         health: null,
-        error: `Host 状态接口返回 ${response?.status ?? '?'}：Host 半边可能没有挂载或已崩溃`,
+        error: t('healthConn.error').replace('{code}', String(response?.status ?? '?')),
       }
     }
     const health = await response.json()
@@ -964,7 +1283,7 @@ function healthView(state) {
     return {
       reachable: false,
       bad: true,
-      summary: state?.error === undefined || state.error === '' ? 'Host 半边没有回应' : state.error,
+      summary: state?.error === undefined || state.error === '' ? t('status.hostNoResponse') : state.error,
       breaker: '', missing: [], struggling: [], errors: [], detail: '',
     }
   }
@@ -982,16 +1301,20 @@ function healthView(state) {
     .map(([name]) => name)
   const struggling = Object.entries(health.providers ?? {})
     .filter(([, entry]) => (entry?.failures ?? 0) >= 3)
-    .map(([id, entry]) => `${id}（${entry.failures} 次）`)
+    .map(([id, entry]) => t('status.failureEntry').replace('{id}', id).replace('{count}', String(entry.failures)))
   return {
     reachable: true,
     bad: breaker.tripped === true || missing.length > 0,
-    summary: `Host 半边在线 · 路由${health.routing?.enabled === true ? '已启用' : '未启用'}`
-      + ` · ${health.routing?.tasks ?? 0} 个任务`
-      + ` · 委派工具已生效 ${applied} / 已挂载 ${installed} 个会话`,
+    summary: t('status.summary')
+      .replace('{routing}', health.routing?.enabled === true ? t('status.routerOn') : t('status.routerOff'))
+      .replace('{tasks}', String(health.routing?.tasks ?? 0))
+      .replace('{applied}', String(applied))
+      .replace('{installed}', String(installed)),
     breaker: breaker.tripped === true
-      ? `本插件已自动停用（连续失败 ${breaker.consecutive ?? 0} 次，阈值 ${breaker.threshold ?? 0}）：`
-        + `${breaker.reason ?? ''}。约 60 秒后自动重试；改动任意设置可立即重置。`
+      ? t('status.breaker')
+        .replace('{consecutive}', String(breaker.consecutive ?? 0))
+        .replace('{threshold}', String(breaker.threshold ?? 0))
+        .replace('{reason}', breaker.reason ?? '')
       : '',
     missing,
     struggling,
@@ -1001,24 +1324,27 @@ function healthView(state) {
 }
 
 function TaskRoutingSection(props) {
+  // Subscription only: the hook re-renders this subtree when the harness language
+  // changes, and every t(...) call below then resolves against the new dictionary.
+  useCopy()
   const { scope, presets, session, fault } = props
   // A face that could not even be built is a diagnosis, not a crash: the page
   // still renders and says which face failed.
   if (typeof fault === 'string' && fault.length > 0) {
     return E('div', { className: 'dsh-mr' },
-      E('h2', null, '任务路由'),
-      E(Card, { bad: true, title: '设置页无法连接 Host' },
+      E('h2', null, t('header.title')),
+      E(Card, { bad: true, title: t('error.connectHostFailed.title') },
         E('div', { className: 'dsh-mr-error' }, fault),
         E('div', { className: 'dsh-mr-hint' },
-          'Host 半边仍然正常工作，其他设置页也照常。')))
+          t('error.connectHostFailed.detail'))))
   }
   if (scope === undefined || typeof scope.subscribe !== 'function'
     || typeof scope.getSnapshot !== 'function') {
     return E('div', { className: 'dsh-mr' },
-      E('h2', null, '任务路由'),
-      E(Card, { bad: true, title: '设置镜像不可用' },
+      E('h2', null, t('header.title')),
+      E(Card, { bad: true, title: t('error.mirrorUnavailable.title') },
         E('div', { className: 'dsh-mr-hint' },
-          '这一页需要 settingsScope 提供的设置镜像；它没有出现，所以本页只读不写。')))
+          t('error.mirrorUnavailable.detail'))))
   }
   // Every read of the settings mirror is TOTAL: a throwing face must not be
   // able to take the panel down. `useSyncExternalStore` calls both of these
@@ -1180,7 +1506,7 @@ function TaskRoutingSection(props) {
       // validates the entire document before replacing the folder.
       await scope.mutate(ops, draftRevision, draft)
       setBaseline(draft)
-      setNotice(`已保存（${changedFields.length} 项）`)
+      setNotice(t('notice.saved').replace('{count}', String(changedFields.length)))
     } catch (failure) {
       setSaveError(failure instanceof Error ? failure.message : String(failure))
     } finally {
@@ -1197,8 +1523,8 @@ function TaskRoutingSection(props) {
   }
 
   const heading = E('div', { className: 'dsh-mr-head' },
-    E('h2', null, '任务路由'),
-    E('p', null, '为子智能体按任务挑选模型。主对话用的始终是你在输入框旁选的那个模型，本插件不碰它。'))
+    E('h2', null, t('header.title')),
+    E('p', null, t('header.subtitle')))
 
   /**
    * The save bar.
@@ -1212,17 +1538,17 @@ function TaskRoutingSection(props) {
   const saveBar = E('div', { className: dirty ? 'dsh-mr-savebar dirty' : 'dsh-mr-savebar' },
     E('span', { className: 'dsh-mr-savebar-state' },
       dirty
-        ? `未保存：${changedFields.join('、')}`
-        : (notice === '' ? '没有未保存的修改' : notice)),
+        ? `${t('notice.unsavedLabel')}${changedFields.join(t('common.listSeparator'))}`
+        : (notice === '' ? t('notice.noUnsaved') : notice)),
     E('span', { className: 'dsh-mr-savebar-actions' },
-      dirty ? E('button', { type: 'button', onClick: cancel, disabled: saving }, '取消') : null,
+      dirty ? E('button', { type: 'button', onClick: cancel, disabled: saving }, t('btn.cancel')) : null,
       E('button', {
         type: 'button',
         className: 'dsh-mr-primary',
         onClick: () => void save(),
         disabled: !dirty || saving || !writable,
-        title: writable ? '把本次修改作为一个原子操作写入' : '当前连接不可写',
-      }, saving ? '保存中…' : '保存')))
+        title: writable ? t('btn.saveTitleWrite') : t('btn.saveTitleNotWritable'),
+      }, saving ? t('btn.saving') : t('btn.save'))))
 
   /** A broken settings mirror is stated on the page, never swallowed. */
 
@@ -1235,23 +1561,22 @@ function TaskRoutingSection(props) {
    */
   const mirrorBanner = mirrorError.current === ''
     ? null
-    : E(Card, { bad: true, title: '设置镜像读写出错' },
+    : E(Card, { bad: true, title: t('error.mirrorReadWriteError.title') },
       E('div', { className: 'dsh-mr-error' }, mirrorError.current),
       E('div', { className: 'dsh-mr-hint' },
-        '这一页仍然渲染，但读写设置可能不生效。Host 半边与路由本身不受影响。'))
+        t('error.mirrorReadWriteError.detail')))
 
   // A mirror that never took a section, or a connection keeping preferences
   // process-local: say so instead of rendering an empty form.
   if (snapshot.status === 'loading') {
     return E('div', { className: 'dsh-mr' }, heading, mirrorBanner,
-      E('div', { className: 'dsh-mr-empty' }, '载入中…'))
+      E('div', { className: 'dsh-mr-empty' }, t('status.loading')))
   }
   if (snapshot.status === 'unavailable') {
     return E('div', { className: 'dsh-mr' }, heading, mirrorBanner,
-      E(Card, { bad: true, title: '配置不可读写' },
+      E(Card, { bad: true, title: t('error.configUnreadable.title') },
         E('div', { className: 'dsh-mr-hint' },
-          'Host 半边还没有注册 model-routing 命名空间，或者当前连接把偏好保存在进程内（memory 模式）。'
-          + '请确认插件已随 profile 加载，然后刷新页面。')))
+          t('error.configUnreadable.detail'))))
   }
 
   // Group the flat route list by provider, preserving first-seen order so the
@@ -1295,7 +1620,7 @@ function TaskRoutingSection(props) {
     let suffix = tasks.length + 1
     while (tasks.some(task => task.id === `task-${suffix}`)) suffix += 1
     setTasks([...tasks, {
-      id: `task-${suffix}`, name: '新任务', description: '', enabled: true, keywords: [], pool: [],
+      id: `task-${suffix}`, name: t('defaultTaskName'), description: '', enabled: true, keywords: [], pool: [],
     }])
   }
 
@@ -1328,8 +1653,8 @@ function TaskRoutingSection(props) {
   const toolNames = Array.isArray(healthState.health?.tools) ? healthState.health.tools : []
 
   const healthCard = E(Card, {
-    title: '运行状态',
-    subtitle: 'Host 半边自己报告的：能力探测、最近错误、以及它是否已把自己停用。',
+    title: t('status.healthTitle'),
+    subtitle: t('status.healthSubtitle'),
     bad: view.bad,
   },
     E('div', { className: view.reachable ? 'dsh-mr-hint' : 'dsh-mr-error' }, view.summary),
@@ -1343,37 +1668,36 @@ function TaskRoutingSection(props) {
     view.missing.length === 0
       ? null
       : E('div', { className: 'dsh-mr-hint', style: { marginTop: '10px' } },
-        `以下能力在当前 DSH 版本里没找到，相关功能已自动降级：${view.missing.join('、')}。`
-        + '路由本身不依赖它们；委派工具的安装依赖 agents / subagents / tools。'),
+        t('status.missingCapMsg').replace('{missing}', view.missing.join(t('common.listSeparator')))),
 
     view.struggling.length === 0
       ? null
       : E('div', { className: 'dsh-mr-hint', style: { marginTop: '10px' } },
-        `这些 provider 最近请求失败较多，池里含它们会白烧一次重试：${view.struggling.join('、')}。`),
+        t('status.strugglingMsg').replace('{failures}', view.struggling.join(t('common.listSeparator')))),
 
     view.errors.length === 0
       ? null
       : E('details', { className: 'dsh-mr-diag', style: { marginTop: '10px' } },
-        E('summary', null, `最近 ${view.errors.length} 条 Host 错误`),
+        E('summary', null, t('status.errorCount').replace('{count}', String(view.errors.length))),
         E('pre', null, view.errors
           .map(entry => `${new Date(entry.at).toLocaleTimeString()}  ${entry.where}  ${entry.message}`)
           .join('\n'))),
 
     E('div', { className: 'dsh-mr-row', style: { marginTop: '12px' } },
-      E('button', { type: 'button', onClick: () => void loadHealth() }, '刷新 Host 状态'),
+      E('button', { type: 'button', onClick: () => void loadHealth() }, t('status.refreshHealth')),
       E('button', {
         type: 'button',
         onClick: () => edit(current => ({ ...current, enabled: current.enabled !== true })),
-      }, config.enabled === true ? '停用本插件' : '启用本插件')),
+      }, config.enabled === true ? t('status.disablePlugin') : t('status.enablePlugin'))),
 
     E('div', { className: 'dsh-mr-hint', style: { marginTop: '10px' } },
-      '紧急关闭（设置页也打不开时）：编辑 ',
-      E('code', null, '%DSH_HOME%\\profiles\\web\\cordis.patch.yml'),
-      '，把 ',
+      t('status.emergencyClose'),
+      E('code', null, t('status.emergencyPath')),
+      t('status.emergencyApply'),
+      E('code', null, t('status.emergencyValue')),
+      t('status.emergencyToLine'),
       E('code', null, 'dsh-model-router'),
-      ' 那一行加上 ',
-      E('code', null, 'disabled: true'),
-      '，重启 dsh web 即可。预设文件与其它设置都不会被改动。'))
+      t('status.emergencyAction')))
 
   return E('div', { className: 'dsh-mr' },
     heading,
@@ -1381,113 +1705,108 @@ function TaskRoutingSection(props) {
     mirrorBanner,
     E('div', { className: 'dsh-mr-status' },
       E('span', { className: active ? 'dsh-mr-badge ok' : 'dsh-mr-badge warn' },
-        active ? '生效中' : '未生效'),
+        active ? t('status.active') : t('status.inactive')),
       E('span', { className: 'dsh-mr-hint' },
         active
-          ? `${grantedPresets.length} 个预设已授权 · ${tasks.length} 个任务 · ${catalog?.routes.length ?? 0} 个可用模型`
+          ? t('status.presetSummary')
+            .replace('{presets}', String(grantedPresets.length))
+            .replace('{tasks}', String(tasks.length))
+            .replace('{models}', String(catalog?.routes.length ?? 0))
           : config.enabled !== true
-            ? '总开关未开：子智能体不会被路由'
-            : '还没有授权任何预设：请到「按预设授权」勾选至少一个'),
+            ? t('status.masterOff')
+            : t('status.noPresets')),
       // Closes the span, the status row, AND the root div's argument list is
       // still open — the cards below stay children of that div.
-      writable ? null : E('span', { className: 'dsh-mr-badge warn' }, '只读')),
+      writable ? null : E('span', { className: 'dsh-mr-badge warn' }, t('status.readOnly'))),
 
-    saveError === '' ? null : E(Card, { bad: true, title: '保存失败' },
+    saveError === '' ? null : E(Card, { bad: true, title: t('error.saveFailed.title') },
       E('div', { className: 'dsh-mr-error' }, saveError)),
-    catalogError === '' ? null : E(Card, { bad: true, title: '读取模型目录失败' },
+    catalogError === '' ? null : E(Card, { bad: true, title: t('error.catalogReadFailed.title') },
       E('div', { className: 'dsh-mr-error' }, catalogError)),
 
     healthCard,
 
     E(Card, {
-      title: '判定顺序',
-      subtitle: '每一次子智能体的请求按下面的顺序判定，命中即停。',
+      title: t('cascade.title'),
+      subtitle: t('cascade.subtitle'),
     },
       E('div', { className: 'dsh-mr-help' },
         E('ol', null,
           E('li', null,
-            E('span', { className: 'dsh-mr-q' }, '显式指令 —— '),
-            '消息里出现 ', E('code', null, '[task: 任务id]'), '，直接使用它。'),
+            E('span', { className: 'dsh-mr-q' }, t('cascade.rule1.label')), 
+            t('cascade.rule1.before'), E('code', null, t('cascade.rule1.code')), t('cascade.rule1.after')),
           E('li', null,
-            E('span', { className: 'dsh-mr-q' }, '关键词 —— '),
-            '该任务配置的关键词出现在最近的对话文本里。'),
+            E('span', { className: 'dsh-mr-q' }, t('cascade.rule2.label')), 
+            t('cascade.rule2.desc')),
           E('li', null,
-            E('span', { className: 'dsh-mr-q' }, '语义分类 —— '),
-            '上面两条都没命中、且分类器已启用时，用一个廉价模型把这段文本归到某个任务的「描述」上。'),
+            E('span', { className: 'dsh-mr-q' }, t('cascade.rule3.label')), 
+            t('cascade.rule3.desc')),
           E('li', null,
-            E('span', { className: 'dsh-mr-q' }, '默认任务 —— '), '以上都没命中时用它。'),
+            E('span', { className: 'dsh-mr-q' }, t('cascade.rule4.label')), 
+             E('span', null, t('cascade.rule4.desc'))),
           E('li', null,
-            E('span', { className: 'dsh-mr-q' }, '都不适用 —— '),
-            '没有可用的默认任务时，保持子智能体原本继承的模型不变。'))),
+            E('span', { className: 'dsh-mr-q' }, t('cascade.rule5.label')), 
+            t('cascade.rule5.desc')))),
       E('div', { className: 'dsh-mr-hint' },
-        '「都没命中」的准确含义：没有显式指令、没有关键词命中、分类器没有给出候选内的答案。'
-        + '分类器每轮最多调用一次，同一轮的后续步骤复用该结果，所以一次工具调用不会中途换模型；'
-        + '分类器未启用、超时或答非所问时直接落到默认任务——缺席只会退化成默认，不会让这一轮失败。'),
+        t('cascade.hintExact')),
       E('div', { className: 'dsh-mr-hint' },
-        '模型失败时的退路：先在同一任务池内换下一个模型重试；整个池都失败时改用默认任务；'
-        + '默认任务也失败时不再改写路由，这一轮交回调用方自己继续。')),
+        t('cascade.hintFallback'))),
 
     E(Card, {
-      title: '委派工具',
-      subtitle: '本插件自己提供 subagent（派活）与 subagent_message（把修改意见发回同一个子智能体），'
-        + '并屏蔽同作用域内的内置委派工具——预设文件不需要任何改动。',
+      title: t('delegation.title'),
+      subtitle: t('delegation.subtitle'),
     },
       E(Toggle, {
         id: 'mr-child-delegation',
         checked: at(config, ['childDelegation'], false) === true,
         disabled: !writable,
         onChange: value => edit(current => ({ ...current, childDelegation: value })),
-      }, '允许子智能体再分发（默认关闭）'),
+      }, t('delegation.allowRedistribution')),
       E('div', { className: 'dsh-mr-hint' },
-        '关闭时（推荐）：子智能体是执行者，只干被派给它的活，不再往下派；'
-        + '需要拆分时它把拆分结果交回主智能体。开启时子智能体可以再往下派一层。'
-        + '无论开关如何，子智能体都不会拿到委派工具本身，层级由授权与作用域决定，不靠提示词约束。'),
+        t('delegation.redistributeHint')),
       E('div', { className: 'dsh-mr-hint' },
-        '子智能体默认可持续：交付后仍然存活，主智能体用 subagent_message 把修改意见或下一步发回'
-        + '同一个子智能体，不必另开一个——任务归属因此始终清晰。'
-        + '若当前 DSH 的 spawn 后端不支持可持续子会话，插件会自动退回一次性委派，'
-        + '并把工具描述改成"每次委派都是一个新子智能体"，不会承诺做不到的事。')),
+        t('delegation.sustainableHint'))),
 
     E(Card, {
-      title: '总开关与默认任务',
-      subtitle: '配置写在 Host 的设置文档里，重启后依然有效，与插件是否出现在左下角无关。',
+      title: t('masterSwitch.title'),
+      subtitle: t('masterSwitch.subtitle'),
     },
       E(Toggle, {
         id: 'mr-enabled',
-        label: '启用任务路由',
+        label: t('masterSwitch.enableLabel'),
         checked: config.enabled,
         disabled: !writable,
-        hint: '只影响子智能体；关闭时任何会话的模型都不会被改动',
+        hint: t('masterSwitch.enableHint'),
         onChange: value => edit(current => ({ ...current, enabled: value })),
       }),
       E('div', { className: 'dsh-mr-row' },
-        E('label', { className: 'dsh-mr-key' }, '默认任务'),
+        E('label', { className: 'dsh-mr-key' }, t('masterSwitch.defaultTaskLabel')), 
         E('select', {
           className: 'dsh-mr-grow',
           value: defaultTaskId,
           disabled: !writable,
           onChange: event => edit(current => ({ ...current, defaultTaskId: event.target.value })),
         },
-          E('option', { value: '' }, '不设默认（没命中就不路由）'),
+          E('option', { value: '' }, t('masterSwitch.noDefaultOption')), 
           ...taskIds.map(taskId => E('option', { key: taskId, value: taskId }, taskId)))),
       E('div', { className: 'dsh-mr-hint' },
         defaultTaskId === ''
-          ? '当前没有默认任务：只有明确命中的子智能体才会被路由，其余保持继承的模型。'
-          : `未命中时使用「${defaultTaskId}」。该任务被停用或模型池为空时，等同于没有默认任务。`)),
+          ? t('masterSwitch.noDefaultMsg')
+          : t('masterSwitch.defaultUsage').replace('{taskId}', defaultTaskId))),
 
     E(Card, {
-      title: '语义分类器',
-      subtitle: '只在前两条规则都没命中时才被问到，用于覆盖关键词写不出来的任务。',
+      title: t('classifier.title'),
+      subtitle: t('classifier.subtitle'),
     },
       E(Toggle, {
         id: 'mr-classifier',
-        label: '启用分类器',
+        label: t('classifier.enableLabel'),
         checked: at(config, ['classifier', 'enabled'], false) === true,
         disabled: !writable,
         onChange: value => edit(current => ({ ...current, classifier: classifierPatch(current.classifier, { enabled: value }) })),
       }),
       E('div', { className: 'dsh-mr-row' },
-        E('label', { className: 'dsh-mr-key' }, '分类模型'),
+        E('label', { className: 'dsh-mr-key' }, t('classifier.modelLabel')), 
         E('select', {
           className: 'dsh-mr-grow',
           value: classifierValue,
@@ -1498,10 +1817,10 @@ function TaskRoutingSection(props) {
             edit(current => ({ ...current, classifier: classifierPatch(current.classifier, { provider: route.provider, model: route.model }) }))
           },
         },
-          E('option', { value: '' }, '— 选择模型 —'),
+          E('option', { value: '' }, t('modelPicker.emptyLabel')), 
           ...modelOptions(groups))),
       E('div', { className: 'dsh-mr-grid2' },
-        E(Field, { label: '每次判定的输入上限（tokens）' },
+        E(Field, { label: t('classifier.inputLimitLabel') },
           E('input', {
             type: 'number', min: 500, step: 500,
             value: String(at(config, ['classifier', 'maxInputTokens'], 4000)),
@@ -1510,7 +1829,7 @@ function TaskRoutingSection(props) {
               maxInputTokens: Math.max(500, Number(event.target.value) || 4000),
             }) })),
           })),
-        E(Field, { label: '超时（ms）' },
+        E(Field, { label: t('classifier.timeoutLabel') },
           E('input', {
             type: 'number', min: 1000, step: 1000,
             value: String(at(config, ['classifier', 'timeoutMs'], 15000)),
@@ -1520,16 +1839,14 @@ function TaskRoutingSection(props) {
             }) })),
           }))),
       E('div', { className: 'dsh-mr-hint' },
-        '分类器只读到：子智能体的最初指令 + 最近几条消息，再按这个上限截断——'
-        + '所以无论对话多长，输入都不会超过它。判定本身很短（候选任务每个一行 + 一句回复），'
-        + '上限给 2000～4000 就够；这里填的是估算 token 数，中英混排按各自密度折算。')),
+        t('classifier.hint'))),
 
     E(Card, {
-      title: '任务与模型池',
-      subtitle: '「描述」是分类器唯一读到的内容，写清这个任务是做什么的。池内多个模型按权重全局轮转，不区分会话。',
+      title: t('taskPool.title'),
+      subtitle: t('taskPool.subtitle'),
     },
       tasks.length === 0
-        ? E('div', { className: 'dsh-mr-empty' }, '还没有任务。点下面的「新建任务」开始。')
+        ? E('div', { className: 'dsh-mr-empty' }, t('taskPool.noTasks'))
         : tasks.map((task, index) => {
           const pool = Array.isArray(task.pool) ? task.pool : []
           const total = pool.reduce((sum, entry) => sum + (Number(entry.weight) || 1), 0)
@@ -1538,45 +1855,45 @@ function TaskRoutingSection(props) {
             E('div', { className: 'dsh-mr-task-head' },
               E('input', {
                 type: 'text', value: task.id ?? '', disabled: !writable,
-                title: '任务 id：小写连字符。可在消息里用 [task: id] 直接指定',
+                title: t('task.idPlaceholder'),
                 onChange: event => updateTask(index, {
                   id: event.target.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-'),
                 }),
               }),
-              isDefault ? E('span', { className: 'dsh-mr-badge ok' }, '默认') : null,
-              task.enabled === false ? E('span', { className: 'dsh-mr-badge warn' }, '已停用') : null,
+              isDefault ? E('span', { className: 'dsh-mr-badge ok' }, t('task.badgeDefault')) : null,
+              task.enabled === false ? E('span', { className: 'dsh-mr-badge warn' }, t('task.badgeDisabled')) : null,
               E('span', { style: { flex: '1 1 auto' } }),
               E('button', {
                 type: 'button', disabled: !writable,
                 onClick: () => edit(current => ({ ...current, defaultTaskId: isDefault ? '' : task.id })),
-              }, isDefault ? '取消默认' : '设为默认'),
+              }, isDefault ? t('task.cancelDefault') : t('task.makeDefault')),
               E('button', {
                 type: 'button', className: 'dsh-mr-danger', disabled: !writable,
                 onClick: () => setTasks(tasks.filter((_, at2) => at2 !== index)),
-              }, '删除')),
+              }, t('task.delete'))),
 
             E('div', { className: 'dsh-mr-grid2' },
-              E(Field, { label: '显示名' },
+              E(Field, { label: t('task.nameLabel') },
                 E('input', {
                   type: 'text', value: task.name ?? '', disabled: !writable,
-                  placeholder: '例如：3D 建模',
+                  placeholder: t('task.namePlaceholder'),
                   onChange: event => updateTask(index, { name: event.target.value }),
                 })),
-              E(Field, { label: '关键词（逗号分隔，可选）' },
+              E(Field, { label: t('task.keywordsLabel') },
                 E('input', {
                   type: 'text', disabled: !writable,
                   value: Array.isArray(task.keywords) ? task.keywords.join(', ') : '',
-                  placeholder: '命中即直接路由，不必等分类器',
+                  placeholder: t('task.keywordsPlaceholder'),
                   onChange: event => updateTask(index, {
                     keywords: event.target.value.split(',').map(word => word.trim()).filter(word => word.length > 0),
                   }),
                 }))),
 
             E('div', { className: 'dsh-mr-field', style: { marginTop: '12px' } },
-              E('span', null, '描述（分类器读这段文字做判断）'),
+              E('span', null, t('task.descLabel')),
               E('textarea', {
                 value: task.description ?? '', disabled: !writable,
-                placeholder: '例如：三维建模、CAD、机械结构设计、导出 STL/STEP、3D 打印件设计',
+                placeholder: t('task.descPlaceholder'),
                 onChange: event => updateTask(index, { description: event.target.value }),
               })),
 
@@ -1586,13 +1903,13 @@ function TaskRoutingSection(props) {
                 checked: task.enabled !== false, disabled: !writable,
                 onChange: event => updateTask(index, { enabled: event.target.checked }),
               }),
-              E('label', { htmlFor: `mr-task-on-${index}` }, '启用')),
+              E('label', { htmlFor: `mr-task-on-${index}` }, t('task.onLabel'))),
 
             // ── the child profile: what this task's subagents look like ──────
             E('div', { className: 'dsh-mr-pool' },
               E('div', { className: 'dsh-mr-pool-head' },
-                E('strong', null, '子智能体档案'),
-                E('span', null, '不设置就完全继承父预设')),
+                E('strong', null, t('childProfile.title')),
+                E('span', null, t('childProfile.subtitle'))),
 
               E('div', { className: 'dsh-mr-stack' },
               // Persona: ONE control, no mode selector. A mode selector cannot
@@ -1602,36 +1919,36 @@ function TaskRoutingSection(props) {
               // placeholder is the template, plus a click-to-fill button, has no
               // such state: empty means inherit, and that is visible.
               E('div', { className: 'dsh-mr-field', style: { marginTop: '12px' } },
-                E('span', null, '提示词（留空 = 继承父预设）'),
+                E('span', null, t('childProfile.promptLabel')),
                 E('textarea', {
                   value: task.childPersona ?? '', disabled: !writable,
-                  placeholder: '这个任务的子智能体只读这一段系统提示词。留空则完全继承父预设。',
+                  placeholder: t('childProfile.promptPlaceholder'),
                   onChange: event => updateTask(index, { childPersona: event.target.value }),
                 }),
                 E('div', { className: 'dsh-mr-row', style: { marginTop: '8px' } },
                   E('button', {
                     type: 'button', disabled: !writable,
-                    onClick: () => updateTask(index, { childPersona: EXECUTOR_PERSONA }),
-                  }, '填入通用执行者模板'),
-                  task.childPersona === EXECUTOR_PERSONA
-                    ? E('span', { className: 'dsh-mr-badge ok' }, '已是模板')
+                    onClick: () => updateTask(index, { childPersona: executorPersona() }),
+                  }, t('childProfile.fillTemplate')),
+                  task.childPersona === executorPersona()
+                    ? E('span', { className: 'dsh-mr-badge ok' }, t('childProfile.isTemplateBadge'))
                     : null,
                   at(task, ['childPersona'], '') === ''
                     ? null
                     : E('button', {
                       type: 'button', disabled: !writable,
                       onClick: () => updateTask(index, { childPersona: '' }),
-                    }, '清空（回到继承）'))),
+                    }, t('childProfile.clearBtn')))),
 
               E('div', { className: 'dsh-mr-row' },
-                E('label', { className: 'dsh-mr-key' }, '推理强度'),
+                E('label', { className: 'dsh-mr-key' }, t('childProfile.reasoningEffortLabel')),
                 E('select', {
                   className: 'dsh-mr-grow',
                   disabled: !writable,
                   value: at(task, ['reasoningEffort'], ''),
                   onChange: event => updateTask(index, { reasoningEffort: event.target.value }),
                 },
-                  E('option', { value: '' }, '跟随路由默认（默认）'),
+                  E('option', { value: '' }, t('childProfile.reasoningDefault')),
                   ...REASONING_EFFORTS.map(effort => E('option', { key: effort, value: effort }, effort)))),
 
               // Tools: a switch plus tags, not a dropdown. A set of independently
@@ -1648,10 +1965,10 @@ function TaskRoutingSection(props) {
                     childTools: event.target.checked ? { allow: defaultChildTools(toolNames) } : null,
                   }),
                 }),
-                E('label', { htmlFor: `mr-child-tools-${index}` }, '限制子智能体可用工具'),
+                E('label', { htmlFor: `mr-child-tools-${index}` }, t('childProfile.toolFilterLabel')),
                 toolNames.length === 0
-                  ? E('span', { className: 'dsh-mr-badge warn' }, '读不到工具清单：请确认 Host 半边已重启')
-                  : E('span', { className: 'dsh-mr-hint' }, '不勾选 = 继承父预设的全部工具')),
+                  ? E('span', { className: 'dsh-mr-badge warn' }, t('childProfile.toolFilterWarn'))
+                  : E('span', { className: 'dsh-mr-hint' }, t('childProfile.toolFilterHint'))),
 
               at(task, ['childTools'], null) === null || toolNames.length === 0
                 ? null
@@ -1677,15 +1994,13 @@ function TaskRoutingSection(props) {
                   })),
 
               E('div', { className: 'dsh-mr-hint' },
-                '子智能体没有自己的预设——它继承父预设。这两项是让它专用于本任务的办法：'
-                + '提示词会整体替换继承来的那段（作用域同名遮蔽 + complete），工具只留你勾的。'
-                + '无论怎么设置，子智能体都拿不到委派工具，能否再细分只由「委派工具」开关决定。'))),
+                t('childProfile.hint')))),
 
             E('div', { className: 'dsh-mr-pool' },
               E('div', { className: 'dsh-mr-pool-head' },
-                E('strong', null, '模型池'),
-                E('span', null, `${pool.length} 个模型 · 权重合计 ${total}`),
-                pool.length === 0 ? E('span', { className: 'dsh-mr-badge warn' }, '空池不会路由') : null,
+                E('strong', null, t('pool.title')),
+                E('span', null, t('pool.modelCount').replace('{count}', String(pool.length)).replace('{total}', String(total))),
+                pool.length === 0 ? E('span', { className: 'dsh-mr-badge warn' }, t('pool.emptyBadge')) : null,
                 pool.length > 1
                   ? E('span', { className: 'dsh-mr-hint' },
                     pool.map(entry => `${entry.model || '?'} ${Math.round(((Number(entry.weight) || 1) / total) * 100)}%`)
@@ -1698,22 +2013,22 @@ function TaskRoutingSection(props) {
                 onRemove: slotIndex => setPool(index, pool.filter((_, at2) => at2 !== slotIndex)),
               })),
               E('div', { className: 'dsh-mr-row', style: { marginTop: '12px' } },
-                E('button', { type: 'button', disabled: !writable, onClick: () => addModel(index) }, '+ 添加模型'),
+                E('button', { type: 'button', disabled: !writable, onClick: () => addModel(index) }, t('pool.addModel')),
                 E('span', { className: 'dsh-mr-hint' },
-                  '权重是相对比例：2 与 1 表示它承担三分之二的流量；轮转是全局的，不区分会话'))))
+                  t('pool.weightHint')))))
         }),
       E('div', { className: 'dsh-mr-row', style: { marginTop: '16px' } },
-        E('button', { type: 'button', disabled: !writable, onClick: addTask }, '+ 新建任务'))),
+        E('button', { type: 'button', disabled: !writable, onClick: addTask }, t('newTaskButton')))),
 
     E(Card, {
-      title: '按预设授权',
-      subtitle: '任务库和模型池是全局的；这里只决定哪些预设允许使用路由。未勾选的预设完全不受影响。',
+      title: t('authPreset.title'),
+      subtitle: t('authPreset.subtitle'),
     },
       presetIds.length === 0
         ? E('div', { className: 'dsh-mr-empty' },
           rosterError === ''
-            ? '预设清单为空：这台机器上一个可用预设都没有。先在「预设」页建一个，或确认 agent-presets 已配置。'
-            : `读不到预设清单：${rosterError}。Host 半边仍然正常工作，其他设置也照常保存。`)
+            ? t('authPreset.emptyRoster')
+            : t('authPreset.rosterError').replace('{error}', rosterError))
         : presetIds.map(presetId => {
           const on = grants[presetId] !== undefined
           return E('div', { className: 'dsh-mr-preset', key: presetId },
@@ -1730,7 +2045,7 @@ function TaskRoutingSection(props) {
               E('code', null, presetId),
               grants[presetId]?.exclusive === true
                 ? E('span', { className: 'dsh-mr-badge', style: { marginLeft: '8px' } },
-                  `仅限 ${(grants[presetId].tasks ?? []).join(', ') || '（无任务）'}`)
+                  t('presets.exclusiveLabel').replace('{tasks}', (grants[presetId].tasks ?? []).join(', ') || t('authPreset.exclusiveNone')))
                 : null),
             on ? E('button', {
               type: 'button', disabled: !writable,
@@ -1741,42 +2056,41 @@ function TaskRoutingSection(props) {
                   : { enabled: true, exclusive: true, tasks: taskIds }
                 edit(current => ({ ...current, presets: next }))
               },
-            }, grants[presetId]?.exclusive === true ? '改为全部任务' : '仅限指定任务') : null)
+            }, grants[presetId]?.exclusive === true ? t('authPreset.toggleAll') : t('authPreset.exclusiveSelect')) : null)
         })),
 
     E(Card, {
-      title: '路由预览',
-      subtitle: '输入一句话，看看一个子智能体接到它时会落到哪个任务。纯本地判定，不发送任何请求。',
+      title: t('preview.title'),
+      subtitle: t('preview.subtitle'),
     },
       E('div', { className: 'dsh-mr-row' },
         E('select', {
           value: previewPreset,
           onChange: event => setPreviewPreset(event.target.value),
         },
-          E('option', { value: '' }, '（未授权预设）'),
+          E('option', { value: '' }, t('preview.noGrantOption')),
           ...presetIds.map(presetId => E('option', { key: presetId, value: presetId }, presetId))),
         E('input', {
           type: 'text', className: 'dsh-mr-grow', value: previewText,
-          placeholder: '例如：帮我用 FreeCAD 建一个齿轮',
+          placeholder: t('preview.placeholder'),
           onChange: event => setPreviewText(event.target.value),
         })),
       previewText === '' ? null : E('div', { className: 'dsh-mr-hint', style: { marginTop: '10px' } },
         describePreview(config, previewText, previewPreset))),
 
     E(Card, {
-      title: '模型目录',
-      subtitle: '与输入框旁的模型选择器同源：Host 通过各 provider 适配器解析出的可用模型。池与分类器的选项都取自这里。',
+      title: t('catalog.title'),
+      subtitle: t('catalog.subtitle'),
     },
       E('div', { className: 'dsh-mr-hint' },
-        catalog === null
-          ? '读取中…'
-          : `可用模型 ${catalog.routes.length} 个，覆盖 ${new Set(catalog.routes.map(route => route.provider)).size} 个 provider。`),
+        catalog === null ? t('catalog.loading')
+          : t('catalog.modelCount').replace('{count}', String(catalog.routes.length)).replace('{providers}', String(new Set(catalog.routes.map(route => route.provider)).size))),
       E('div', { className: 'dsh-mr-row', style: { marginTop: '12px' } },
-        E('button', { type: 'button', onClick: () => void loadCatalog() }, '刷新模型列表')),
+        E('button', { type: 'button', onClick: () => void loadCatalog() }, t('catalog.refreshBtn'))),
       catalog === null || catalog.routes.length === 0
         ? null
         : E('details', { className: 'dsh-mr-diag' },
-          E('summary', null, '查看全部可用模型'),
+          E('summary', null, t('catalog.showAll')),
           E('pre', null, catalog.routes
             .map(route => `${route.provider} / ${route.model}${route.name === route.model ? '' : `  (${route.name})`}`)
             .join('\n')))),
@@ -1797,7 +2111,7 @@ function TaskRoutingSection(props) {
  * folder rather than in a settings namespace, so the page's source is the Host's
  * configuration endpoint — see `createConfigMirror`.
  */
-export const inject = ['slots', 'remote', 'remote.session']
+export const inject = ['slots', 'locale', 'remote', 'remote.session']
 
 /**
  * Names the page exposes for testing.
@@ -1812,14 +2126,25 @@ export const __testing = {
   routeProblem, describePreview, asConfig, isRouteId, catalogFromModelCatalog, fetchRoutes,
   fetchPresets, fetchHealth, healthView, classifierPatch, modelOptionLabel, modelOptions,
   sectionBoundary, optionalFace, canonical, sameConfig, diffFields, diffOps,
-  EDITABLE_PATHS, EXECUTOR_PERSONA, DEFAULT_CHILD_TOOLS, normalizeTask, defaultChildTools,
+  EDITABLE_PATHS, executorPersona, EXECUTOR_PERSONA: executorPersona(),
+  DEFAULT_CHILD_TOOLS, normalizeTask, defaultChildTools,
   createConfigMirror, NAMESPACE,
 }
 
 export function apply(ctx) {
   ctx.effect(() => stylesApi.insert(STYLES), 'dsh-model-router: settings styles')
+  // The copy follows the harness language. Registering the dictionary on this fiber
+  // makes it disappear with the plugin; the bridge then resolves every string
+  // through the harness's own translate function, so switching language in the
+  // settings page changes this page on the next render.
+  ctx.effect(() => ctx.locale.register(NS, COPY), 'dsh-model-router: copy dictionaries')
+  if (typeof ctx.locale.bind === 'function') localeBridge.t = ctx.locale.bind(NS)
+  if (typeof ctx.locale.subscribe === 'function') {
+    localeBridge.subscribe = listener => ctx.locale.subscribe(listener)
+    localeBridge.revision = ctx.locale.getSnapshot?.().revision ?? 0
+  }
 
-  // The configuration mirror: the page's one source of truth.
+  // The configuration mirror
   //
   // Resolved through `ctx.get` so a test — or a future in-process provider — can
   // supply one with the same surface, and created here rather than inside
@@ -1834,7 +2159,7 @@ export function apply(ctx) {
   ctx.slots.inject(SECTION.name, () => ctx.slots.register({
     ...SECTION,
     // Without `label` the nav row renders no text at all.
-    label: () => '任务路由',
+    label: () => t('nav.label'),
     // Resolving the faces must NEVER throw. `inject()` runs while the section is
     // being registered, so a throwing getter here costs the WHOLE panel — the
     // blank-page failure this page has now suffered twice, with nothing on

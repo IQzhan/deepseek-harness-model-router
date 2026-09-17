@@ -3,7 +3,7 @@
 // Nothing here is mocked. The store's whole job is the filesystem, so testing it
 // against a stub would test the parts that cannot break.
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { dshHome, scratch, cleanup } from './test-support.mjs'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
@@ -14,9 +14,8 @@ import {
 
 // The YAML parser the deployment already uses for `settings.yaml`, so this store
 // reads and writes the same dialect the rest of the harness does. Resolved from
-// the profile, since this project has no node_modules of its own.
-const require = createRequire(join(process.env.DSH_HOME ?? join('E:', 'Workspace', '.dsh'),
-  'profiles', 'web', 'cordis.patch.yml'))
+// the harness home, since this project has no node_modules of its own.
+const require = createRequire(join(dshHome(), 'profiles', 'web', 'cordis.patch.yml'))
 const { parse: parseYaml, stringify: stringifyYaml } =
   await import(pathToFileURL(require.resolve('yaml')).href)
 
@@ -33,7 +32,7 @@ function check(label, actual, expected) {
   results.push({ label, ok, actual, expected })
 }
 
-const root = mkdtempSync(join(tmpdir(), 'mr-store-'))
+const root = scratch('mr-store-')
 const at = paths(root)
 const config = {
   global: {
