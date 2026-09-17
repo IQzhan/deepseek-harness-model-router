@@ -72,6 +72,23 @@ check('and both languages link to it', [en.includes('docs/verification.md'), zh.
 check('both languages state the licence',
   [/MIT/.test(en), /MIT/.test(zh)], [true, true])
 
+// The suite and assertion counts are the one kind of content a structure check cannot
+// compare, so they are compared as NUMBERS: a count updated in one language only is
+// how a README starts lying about how much is tested.
+{
+  const counts = text => {
+    const suites = /(\d+)\s*(?:个套件|suites)/u.exec(text)
+    const assertions = /(\d+)\s*(?:条断言|assertions)/u.exec(text)
+    return [suites?.[1] ?? null, assertions?.[1] ?? null]
+  }
+  const [enSuites, enAssertions] = counts(en)
+  const [zhSuites, zhAssertions] = counts(zh)
+  check('both languages state a suite count', enSuites !== null && zhSuites !== null, true)
+  check('and the same one', enSuites, zhSuites)
+  check('both languages state an assertion count', enAssertions !== null && zhAssertions !== null, true)
+  check('and the same one', enAssertions, zhAssertions)
+}
+
 const failed = results.filter(result => !result.ok)
 for (const result of results) {
   console.log(`${result.ok ? 'PASS' : 'FAIL'}  ${result.label}${result.ok ? '' : `\n      expected ${JSON.stringify(result.expected)}\n      actual   ${JSON.stringify(result.actual)}`}`)
